@@ -411,6 +411,7 @@ def _nki_entry(module: str, name: str = "kernel", grid: int = 0):
         hc_expand,
         hc_mixes,
         index_score,
+        moe_expert,
         rmsnorm,
         sparse_attn as sparse_attn_kernel,
         swiglu as swiglu_kernel,
@@ -426,6 +427,7 @@ def _nki_entry(module: str, name: str = "kernel", grid: int = 0):
         "hc_expand": hc_expand,
         "hc_mixes": hc_mixes,
         "index_score": index_score,
+        "moe_expert": moe_expert,
         "rmsnorm": rmsnorm,
         "sparse_attn": sparse_attn_kernel,
         "swiglu": swiglu_kernel,
@@ -654,12 +656,42 @@ def nki_linear(
     return out[:rows].reshape(*x.shape[:-1], out.shape[-1])
 
 
+#: Store the **routed experts'** fp4 weights with the contracted axis on the
+#: partition axis — `[in//2, out]` nibbles and `[in//32, out]` scales, i.e. the
+#: transpose of what the checkpoint holds — so that `kernels/moe_expert.py` can
+#: DMA the packed nibbles straight into SBUF and dequantize them there.
+#:
+#: **Why the layout is the lever.** `blockquant.fp4_linear` cannot read the
+#: stored `[out, in//2]` layout into the tensor engine directly: `nc_matmul`
+#: wants the contracted axis on partitions, so the kernel dequantizes the whole
+#: weight into a bf16 copy in private HBM and then `dma_transpose`s tiles of
+#: *that* back in. At `n=2304, k=5120` a 5.9 MB fp4 weight therefore costs a
+#: 23.6 MB write plus a >= 23.6 MB read — ~8x the weight, per GEMM, and one
+#: expert runs three of them. `fp4_linear_fused` removed the round trip while
+#: keeping the stored layout, which left it `dma_transpose`ing packed bytes
+#: instead, and it lost 50% of TTFT (see `nki_linear`). Transposing **once at
+#: load time** is what makes the fused expert kernel's weight read contiguous:
+#: one strided `dma_copy` per k-block, no transpose anywhere, 5.9 MB instead of
+#: ~47 MB. `kernels/legacy/moe_short.py` reads exactly this layout and is where
+#: the kernel comes from.
+#:
+#: Set `DEEPSEEK_V41_EXPERT_KMAJOR=0` to go back to the stored layout and the
+#: four-kernel `_swiglu_expert` path; nothing else changes with it, which is
+#: what makes it the fallback if the fused kernel is ever in doubt.
+_EXPERT_KMAJOR = os.environ.get("DEEPSEEK_V41_EXPERT_KMAJOR", "1") != "0"
+
+
 class BlockQuantLinear(nn.Module):
     """A linear whose weight is stored block-scaled, as the checkpoint has it.
 
         fp8  `[out, in]` e4m3 + `[ceil(out/32), ceil(in/32)]`   attention, shared experts
         fp4  `[out, in//2]` two e2m1 per byte + `[out, in/32]`   routed experts
         bf16 `[out, in]`, no scale                               compressor, indexer wk
+
+    `kmajor` transposes the fp4 pair — `[in//2, out]` and `[in//32, out]` — for
+    the fused expert kernel. See `_EXPERT_KMAJOR`. The bytes are the same bytes;
+    only which axis is contiguous changes, and `MoE._stage` does the transpose on
+    the host as it copies an expert in.
     """
 
     def __init__(
@@ -670,12 +702,14 @@ class BlockQuantLinear(nn.Module):
         dtype: torch.dtype = torch.bfloat16,
         block: int = 32,
         persistent: bool = True,
+        kmajor: bool = False,
     ) -> None:
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.storage = storage
         self.block = block
+        self.kmajor = kmajor and storage == "fp4"
 
         if storage == "fp8":
             specs = [
@@ -687,10 +721,17 @@ class BlockQuantLinear(nn.Module):
                 ),
             ]
         elif storage == "fp4":
-            specs = [
-                ("weight", (out_features, in_features // 2), torch.uint8),
-                ("scale", (out_features, in_features // block), torch.uint8),
-            ]
+            specs = (
+                [
+                    ("weight", (in_features // 2, out_features), torch.uint8),
+                    ("scale", (in_features // block, out_features), torch.uint8),
+                ]
+                if self.kmajor
+                else [
+                    ("weight", (out_features, in_features // 2), torch.uint8),
+                    ("scale", (out_features, in_features // block), torch.uint8),
+                ]
+            )
         elif storage == "bf16":
             specs = [("weight", (out_features, in_features), dtype)]
         else:
@@ -717,11 +758,28 @@ class BlockQuantLinear(nn.Module):
         if self.storage == "fp8":
             return dequant_block_fp8(self.weight, self.scale, self.block, dtype)
         if self.storage == "fp4":
+            if self.kmajor:
+                # Back to `[out, in//2]` first: `dequant_block_fp4` unpacks the
+                # low nibble as k even and the high as k odd along the *last*
+                # axis, which is the k axis only in the stored layout.
+                return dequant_block_fp4(
+                    self.weight.t().contiguous(),
+                    self.scale.t().contiguous(),
+                    self.block,
+                    dtype,
+                )
             return dequant_block_fp4(self.weight, self.scale, self.block, dtype)
         return self.weight.to(dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """`x @ weight.T` in a NKI kernel. The only path; there is no fallback."""
+        if self.kmajor:
+            raise RuntimeError(
+                "this linear's fp4 weight is stored k-major for "
+                "`kernels/moe_expert.fp4_expert_ffn`, and `blockquant`'s GEMMs "
+                "read the checkpoint's `[out, in//2]` layout. Route it through "
+                "`_routed_expert_step`, or set DEEPSEEK_V41_EXPERT_KMAJOR=0."
+            )
         return nki_linear(
             x, self.weight, getattr(self, "scale", None), self.storage
         )
@@ -2317,10 +2375,58 @@ def _swiglu_expert(x, weights, w1, s1, w2, s2, w3, s3, storage, limit):
     return nki_linear(y.to(dtype), w2, s2, storage)
 
 
+#: `fp4_expert_ffn`'s launch grid: 2 program instances, one per physical core of
+#: the logical NeuronCore, splitting the intermediate axis (2304 -> 1152 each)
+#: and summing the two partial down-projections through a `core_barrier`. Not a
+#: knob — the kernel asserts on it, the way `blockquant.fp4_linear_2core` does,
+#: because a one-core kernel run at grid 2 computes the same result twice.
+#:
+#: It is here rather than inlined because giving it up is the one way this
+#: kernel could lose: the expert GEMM is compute-bound at the 128-row bucket
+#: (arithmetic intensity ~482 against a ~221 FLOP/byte ridge point), and
+#: `fp4_linear_2core` measured -7.0% TTFT / -15.0% TPOT over the undivided
+#: kernel purely by using the second core. Fusing while dropping the split
+#: would hand back more than the fusion wins.
+_EXPERT_FFN_GRID = 2
+
+
+def _fused_expert(x, route_weights, w1, s1, w2, s2, w3, s3):
+    """One routed expert's whole FFN in **one** NKI kernel, fp32 out.
+
+    Replaces the four kernels `_swiglu_expert` issues — two fp4 GEMMs over the
+    same `x`, a SwiGLU reading both back from HBM, and a third fp4 GEMM over a
+    dtype-cast intermediate — with a single `kernels/moe_expert` invocation in
+    which the gate and up projections share one staged activation, the clamped
+    SwiGLU happens in SBUF, and the down projection accumulates in PSUM. The
+    weights are read as packed fp4 straight into SBUF (`_EXPERT_KMAJOR`), so
+    nothing dequantizes a weight into HBM and nothing reads one back.
+
+    Argument order matches the kernel's, which is `(gate, up, down)` — the
+    model's `(w1, w3, w2)` — rather than this function's historical `w1, w2, w3`.
+    """
+    return _nki_entry("moe_expert", "fp4_expert_ffn", _EXPERT_FFN_GRID)(
+        x, route_weights, w1, s1, w3, s3, w2, s2
+    )
+
+
 def _routed_expert_step(
     carry, flat, rows, route_weights, w1, s1, w2, s2, w3, s3, limit
 ):
-    """Gather one expert's rows, run it, scatter-add into the fp32 carry."""
+    """Gather one expert's rows, run it, scatter-add into the fp32 carry.
+
+    `limit` is unused on the fused path: `moe_expert` bakes `swiglu_limit`, and
+    `MoE.__init__` asserts the config agrees with it. It stays in the signature
+    because `_routed_expert_step2/3` pass it positionally.
+    """
+    if _EXPERT_KMAJOR:
+        return carry.index_add(
+            0,
+            rows,
+            _fused_expert(
+                flat.index_select(0, rows), route_weights,
+                w1, s1, w2, s2, w3, s3,
+            ),
+        )
     y = _swiglu_expert(
         flat.index_select(0, rows), route_weights,
         w1, s1, w2, s2, w3, s3, "fp4", limit,
@@ -2665,14 +2771,21 @@ class Expert(nn.Module):
         super().__init__()
         inter = intermediate_size or config.moe_intermediate_size
         self.swiglu_limit = config.swiglu_limit
+        # Only the fp4 routed experts go k-major: they are the ones
+        # `kernels/moe_expert.fp4_expert_ffn` runs. The shared expert is fp8 and
+        # stays on `blockquant`, so `kmajor` is inert for it.
+        kmajor = _EXPERT_KMAJOR and storage == "fp4"
         self.w1 = BlockQuantLinear(
-            config.hidden_size, inter, storage=storage, persistent=persistent
+            config.hidden_size, inter, storage=storage, persistent=persistent,
+            kmajor=kmajor,
         )
         self.w2 = BlockQuantLinear(
-            inter, config.hidden_size, storage=storage, persistent=persistent
+            inter, config.hidden_size, storage=storage, persistent=persistent,
+            kmajor=kmajor,
         )
         self.w3 = BlockQuantLinear(
-            config.hidden_size, inter, storage=storage, persistent=persistent
+            config.hidden_size, inter, storage=storage, persistent=persistent,
+            kmajor=kmajor,
         )
 
     def allocate(self, device) -> None:
@@ -2683,6 +2796,25 @@ class Expert(nn.Module):
         self, x: torch.Tensor, weights: torch.Tensor | None = None
     ) -> torch.Tensor:
         limit, ones = swiglu_consts(self.swiglu_limit, x.device)
+        if self.w1.kmajor:
+            # Nothing calls this for a routed expert — `MoE` uses the slots for
+            # their weight buffers and goes through `_routed_expert_step` — so
+            # rather than guess at a broadcast for the `(1, 1)` shared-expert
+            # weight, say what the fused kernel wants.
+            flat = x.reshape(-1, self.w1.in_features)
+            if weights is None or tuple(weights.shape) != (flat.shape[0], 1):
+                raise ValueError(
+                    "a k-major fp4 expert runs through "
+                    "`kernels/moe_expert.fp4_expert_ffn`, which wants one "
+                    f"routing weight a row — `weights` of shape "
+                    f"({flat.shape[0]}, 1), not {None if weights is None else tuple(weights.shape)}"
+                )
+            return _fused_expert(
+                flat, weights,
+                self.w1.weight, self.w1.scale,
+                self.w2.weight, self.w2.scale,
+                self.w3.weight, self.w3.scale,
+            ).to(x.dtype).reshape(x.shape)
         return _swiglu_expert(
             x,
             ones if weights is None else weights,
@@ -2726,6 +2858,25 @@ class MoE(nn.Module):
         self.gate = Gate(config, layer_id)
         self.shared_experts = Expert(config, storage="fp8")
         self.expert_slot = Expert(config, storage="fp4", persistent=False)
+        if _EXPERT_KMAJOR:
+            # `moe_expert` bakes the model's constants, so a config that
+            # disagrees with them has to fail here rather than produce a
+            # plausible wrong number 43 blocks deep.
+            from .kernels import moe_expert as _moe_expert_kernel
+
+            for field, baked in (
+                ("hidden_size", _moe_expert_kernel.DIM),
+                ("moe_intermediate_size", _moe_expert_kernel.INTER),
+                ("swiglu_limit", _moe_expert_kernel.SWIGLU_LIMIT),
+            ):
+                if getattr(config, field) != baked:
+                    raise ValueError(
+                        f"kernels/moe_expert.py bakes {field}={baked} and this "
+                        f"config says {getattr(config, field)}. Either "
+                        "re-derive the kernel's constants or set "
+                        "DEEPSEEK_V41_EXPERT_KMAJOR=0 to take the "
+                        "shape-general `blockquant` path."
+                    )
 
         self.cache_slots = nn.ModuleList()
         #: `expert_id -> slot index` for the experts currently resident.
@@ -2835,8 +2986,29 @@ class MoE(nn.Module):
         slot = self.expert_slot if slot is None else slot
         for name in ("w1", "w2", "w3"):
             linear = getattr(slot, name)
-            linear.weight.copy_(blob[f"{name}.weight"].to(linear.weight.device))
-            linear.scale.copy_(blob[f"{name}.scale"].to(linear.scale.device))
+            weight = blob[f"{name}.weight"]
+            scale = blob[f"{name}.scale"]
+            # Reinterpret, never convert. The checkpoint stores these as `int8`
+            # and `float8_e8m0fnu`; `copy_` into the `uint8` buffers would
+            # *value*-cast, and an e8m0 code of 120 would arrive as 0. The
+            # weight store already hands these over as `uint8` (`as_bytes`, and
+            # `_read_expert`'s views of a `uint8` buffer), so this is insurance
+            # against a future reader that does not — it is the exact bug that
+            # bit this iteration's own equivalence test.
+            if weight.dtype != linear.weight.dtype:
+                weight = weight.view(linear.weight.dtype)
+            if scale.dtype != linear.scale.dtype:
+                scale = scale.view(linear.scale.dtype)
+            if linear.kmajor:
+                # On the host, once, as the expert is admitted: the same bytes
+                # in the layout `fp4_expert_ffn` reads. `blob`'s tensors are
+                # views into the weight store's reusable read buffer, so these
+                # have to be materialized anyway — `.t().contiguous()` costs the
+                # copy `copy_` would have made, not an extra one.
+                weight = weight.t().contiguous()
+                scale = scale.t().contiguous()
+            linear.weight.copy_(weight.to(linear.weight.device))
+            linear.scale.copy_(scale.to(linear.scale.device))
         return slot
 
     @torch._dynamo.disable

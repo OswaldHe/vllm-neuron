@@ -74,7 +74,30 @@ def _mgroup(mtiles, ktiles):
 
 #: Free-axis tile widths to try, widest first. Any divisor of `n` not larger
 #: than `NT` is correct; wider is fewer tiles, so fewer instructions.
-_NTILES = (NT, 256, PT, 64, 32, 16, 8, 4, 2)
+#:
+#: **384 is here because the profile said so, and it is the single hottest tile
+#: width in the model.** Before it, this tuple had no multiple of 3, so
+#: `_ntile(1152)` fell all the way to 128 — and 1152 is exactly what a
+#: `*_2core` kernel hands `_gemm` for the routed experts' and the shared
+#: expert's `w1`/`w3` (`n = 2304`, halved across the two physical cores). The
+#: iteration-2 prefill profile measured the consequence: **384,289 of 544,930
+#: `nc_matmul`s (70.5%) ran at `free_dim = 128`**, 1.612 TFLOP in 96.0 ms of
+#: summed tensor-engine duration, against a 10.25 ms floor — **10.7%
+#: efficiency**. The `free_dim = 512` bucket in the same window did a
+#: statistically identical 1.631 TFLOP in **44.0 ms**: the same arithmetic,
+#: 2.2x the time, purely from tile width. Per TFLOP the profile measured
+#: 59.6 ms at 128 against 30.3 ms at 384.
+#:
+#: With 384 available, `_ntile(1152)` picks it, so that GEMM runs 40 x 3 = 120
+#: matmuls a core instead of 40 x 9 = 360, each 3x as wide. Decode has the same
+#: pathology on the dense MLA projections (70.0% of its matmuls at
+#: `free_dim = 128`), so this helps both phases.
+#:
+#: Still correct by the same rule as every other entry — 384 fp32 is 1536 B a
+#: partition, inside a 2 KiB psum bank — and it only ever *widens* a choice: a
+#: shape divisible by 384 and by 512 still takes 512, and one divisible by 384
+#: and 256 takes 384 because wider is fewer instructions.
+_NTILES = (NT, 384, 256, PT, 64, 32, 16, 8, 4, 2)
 
 
 def _ntile(n):
