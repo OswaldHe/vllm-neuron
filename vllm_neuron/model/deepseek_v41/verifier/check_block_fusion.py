@@ -45,7 +45,24 @@ HARD_FROM_ITERATION = 15
 RAMP = [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 HERE = Path(__file__).resolve()
-MODEL_DIR = HERE.parent.parent
+
+
+def _model_dir() -> Path:
+    """The port to inspect: `--model-dir` if given, else this file's own.
+
+    The gate runs the worktree's copy of this script so it inspects the
+    iteration's `model.py`. A worktree created before this file was committed
+    does not have it, which made the constraint fail with "can't open file" —
+    so the caller may instead run the main checkout's copy and point it at the
+    worktree. Without the override that fallback would survey the wrong tree.
+    """
+    argv = sys.argv[1:]
+    if "--model-dir" in argv:
+        return Path(argv[argv.index("--model-dir") + 1]).resolve()
+    return HERE.parent.parent
+
+
+MODEL_DIR = _model_dir()
 MODEL_PY = MODEL_DIR / "model.py"
 KERNELS = MODEL_DIR / "kernels"
 

@@ -492,7 +492,7 @@ constraints:
 
       Needs no device and no checkpoint — it reads source and one JSON file, so it costs
       nothing to run every iteration.
-    command: /home/ubuntu/vllm-neuron/.venv/bin/python "$PWD/vllm_neuron/model/deepseek_v41/verifier/check_block_fusion.py"
+    command: C="$PWD/vllm_neuron/model/deepseek_v41/verifier/check_block_fusion.py"; [ -f "$C" ] || C=/home/ubuntu/vllm-neuron/vllm_neuron/model/deepseek_v41/verifier/check_block_fusion.py; /home/ubuntu/vllm-neuron/.venv/bin/python "$C" --model-dir "$PWD/vllm_neuron/model/deepseek_v41"
     timeout: 120
 
 metrics:
