@@ -510,8 +510,8 @@ agent:
   type: claude
 
 budget:
-  iterations: 13
-  iteration_time: 5h      # per-iteration deadline (the agent sees the countdown)
+  iterations: 16
+  iteration_time: 4h      # per-iteration deadline (the agent sees the countdown)
 
 # ── Per-iteration guidance ──────────────────────────────────────────────────────────────────
 #
