@@ -47,24 +47,43 @@ goal: |
   Read the `##autohelix[...]` lines rather than re-deriving them, and do not run the bench or
   verifier more often than the gate does — the matrix is hours.
 
-  HOW TO WORK. Profile first, change one thing, measure. Capture NEFF+NTFF from a live server
-  with the `neuron-framework-profiling-vllm-neuron` and
-  `neuron-framework-profile-analysis-vllm-neuron` skills or subagents and name the operator
-  that actually binds; `neuron-hardware-entitlement` says whether it is compute- or HBM-bound,
-  so effort goes where there is headroom instead of into a kernel that was never the limit.
-  `neuron-nki-*` subagents write and profile the kernels. Take one block per iteration end to
-  end — write, profile, integrate, leave the tree passing the verifier. Report the compiled
+  HOW TO WORK. Profile first, change one thing, measure. Take one block per iteration end to
+  end — profile, write, integrate, leave the tree passing the verifier. Report the compiled
   graph-variant count before and after: a fusion that halves HBM traffic and doubles the
   variants may not be a win.
+
+  A CAPTURED PROFILE IS A DELIVERABLE OF THIS ITERATION, NOT AN OPTIONAL STEP. You own the
+  device for four hours; the reviewer does not get it after you. Capture NEFF+NTFF and a
+  system trace from a live server with `neuron-framework-profiling-vllm-neuron` (capture —
+  `/start_profile` and `/stop_profile` on a running server), then attribute it with
+  `neuron-framework-profile-analysis-vllm-neuron` (ingest and query) and name the operator
+  that actually binds. `neuron-hardware-entitlement` says whether it is compute- or
+  HBM-bound, so effort goes where there is headroom instead of into a kernel that was never
+  the limit. `neuron-nki-*` subagents write and profile the kernels.
+
+  Write the artifacts to `/mnt/nvme/profiles/iter-<N>/` — the instance store, because traces
+  are large and the root volume is ~40x smaller. Leave them there: the reviewer reads them
+  and cannot capture its own. An iteration that changed a kernel without a profile behind it
+  is a guess, and the reviewer is told to treat a missing profile as a finding.
 
   KERNEL AND MEGAKERNEL FUSION IS THE MAIN LEVER. Fewer, larger NKI kernels. Fuse inside a
   block first — attention, MoE, engram, hyper-connections, the DSpark MTP stages — then across
   blocks, so activations stay in SBUF/PSUM instead of round-tripping HBM. An attention+MoE
   megakernel is the target shape, not an aspiration: every kernel boundary is an HBM write and
   a read back. Alongside it: cut collective count x participant count, raise tensor-engine
-  utilisation, and skip work that cannot change the output. `kernels/legacy/` holds per-layer
-  fused kernels written for this model at 4 ranks — reference material for technique, not for
-  parallelism.
+  utilisation, and skip work that cannot change the output.
+
+  START FROM `kernels/legacy/`. It holds fused per-sublayer megakernels written for THIS
+  model — `moe_short/long.py`, `l2/l3/l20/l21/l24_attn.py`, `hc_attn_in_short/long.py`,
+  `engram_short/long.py`, `dspark_*.py` — which were taken out of the live path because each
+  is constant-folded to one layer, one sequence length and a 4-rank floorplan, and whose
+  arithmetic was then lifted into the per-operation kernels the model runs now. That trade
+  bought shape-generality by giving up fusion and has never been revisited: every op is a NKI
+  kernel and no two ops share one. Getting the fused shape back at 64 ranks with bucketed
+  shapes is the work. Their fixed sizes are module-level constants (`SHARDS = 4`,
+  `TOK = 128`, `TOKENS = 8192`) — edit them and rework the shard arithmetic; the model
+  already buckets rows, so a fixed-size kernel is the natural fit rather than an obstacle.
+  Writing a megakernel from a blank file does not fit in one iteration and will land nothing.
 
   NOT ALL THE TIME IS ON THE DEVICE, AND THE REST IS YOURS TOO. Dynamo re-tracing, first-touch
   graph loads, per-forward Python in the dynamo-disabled planners, DMA ring rebuilds. A
@@ -533,15 +552,35 @@ reviewer:
   prompt: |
     Review the iteration: what changed, what it bought, what it cost, with numbers.
 
-    - Profile what the iteration touched — `neuron-framework-profile-analysis-vllm-neuron` or
-      `neuron-nki-profile-analysis` — and name the operator that binds now. If the change did
-      not move the binding operator, say so plainly.
+    You do NOT have the device. The iteration owned it for four hours and was told to leave
+    its profile behind in `/mnt/nvme/profiles/iter-<N>/`. Do not start a server, a bench or a
+    verifier — a 64-rank server alone is a 20-40 minute cold compile and you would be holding
+    the cores the next iteration needs.
+
+    - Analyse the profile the iteration captured — ingest and query it with
+      `neuron-framework-profile-analysis-vllm-neuron` (or `neuron-nki-profile-analysis` for a
+      single kernel) and name the operator that binds now. If the change did not move the
+      binding operator, say so plainly.
+    - IF THERE IS NO PROFILE, THAT IS A FINDING. Say that the iteration changed the model
+      without measuring where its time goes, and weigh its claims accordingly: a kernel
+      rewrite justified by reasoning alone is a guess that happened to pass a gate. Check
+      `/mnt/nvme/profiles/` and the iteration's own report before concluding one is absent.
     - Separate device-side gains from host-side ones, and check the measured windows were
       clean. A dirty window is not a measurement, and a gain that is really an acceptance
       change is not a gain in the kernel.
+    - Check the numbers in the code against the numbers that were measured. Comments in this
+      tree carry figures from earlier iterations on different hosts and parallelism configs,
+      and at least one — the ~1.12 ms per-graph-launch cost at `model.py:2351` — was wrong by
+      a factor of ~56 and had been steering the work. A claim resting on a carried-over
+      figure is not supported.
+    - If the iteration wrote a fused kernel from scratch instead of adapting the one in
+      `kernels/legacy/` that already covers that sublayer, say so and say what it cost.
     - Report the compiled graph-variant count before and after. More variants is a cost even
       when the numbers improved.
     - Name the next fusion to attempt — within a block, then across blocks — with its expected
       impact and whether it fits one iteration.
   model: claude-sonnet-5
-  timeout_seconds: 3000
+  # 5400 s. Ingesting and querying a 64-rank trace with `neuron-explorer` is the long pole,
+  # and 3000 s was sized for a reviewer that only read the diff. It does not need a server
+  # start: the iteration captures the profile, the reviewer reads it.
+  timeout_seconds: 5400
