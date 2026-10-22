@@ -462,6 +462,39 @@ constraints:
   # effort: medium
   # timeout: 900
 
+  # ── 8. the fusion ramp, enforced only at the end ───────────────────────────────────────
+  - name: block-classes-fused
+    kind: script
+    rationale: |
+      What makes the `iteration_constraints:` ramp more than advice. That schedule is prose
+      in a prompt — `integrate/schedule.py` injects it and nothing checks it, and its
+      `enforcement: hard` warns rather than enforcing. This is the enforcement, and it is a
+      script constraint deliberately: only `kind: script` is counted in `constraints_passing`,
+      which is the metric gated at 0% regression, so only a script can reject an iteration.
+
+      It is advisory for iterations 1-14 and decisive for 15-16. The checker reads
+      `.autohelix/history.jsonl` for the iteration number and exits 0 before 15 whatever the
+      state of the tree, reporting progress so every iteration and its reviewer see the count.
+      From 15 it fails while any of the ten Block classes is unfused. Gating it earlier would
+      reject every iteration in the run, since the kernels do not exist yet.
+
+      The ten classes are derived from `config.py` at run time, not hard-coded, so the check
+      cannot drift from the model. A class is claimed by an entry in `model.py`'s
+      `FUSED_BLOCK_TYPES: dict[int, str]`, mapping class id to the module under `kernels/`
+      that runs that whole class. The script checks the claim is wired — module exists, is
+      not a stub, and is imported by `model.py` from the import statements rather than by
+      searching its text, because the registry literal contains every name it claims and a
+      substring search would be satisfied by the claim itself.
+
+      It checks mechanism, not arithmetic: a registry entry pointing at a real but wrong
+      kernel passes here and fails `verifier` and `full-model-faithful`. Those two are what
+      establish the forward path still computes DeepSeek-V4.1-Flash.
+
+      Needs no device and no checkpoint — it reads source and one JSON file, so it costs
+      nothing to run every iteration.
+    command: /home/ubuntu/vllm-neuron/.venv/bin/python "$PWD/vllm_neuron/model/deepseek_v41/verifier/check_block_fusion.py"
+    timeout: 120
+
 metrics:
   # Gated at batch 1: all three figures. One sequence is where a latency change shows up
   # undiluted, and nothing about a single stream is at the mercy of the scheduler.
