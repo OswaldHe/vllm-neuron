@@ -97,16 +97,18 @@ DEFAULT_OUTPUT_LEN = 128
 BATCH_OVERRIDES = {8192: (1, 4)}
 
 
-def _batches_for(input_len: int, requested: tuple[int, ...] | list[int]):
+def _batches_for(
+    input_len: int, requested: list[int], defaulted: bool = True
+) -> list[int]:
     """The batch sizes to run at `input_len`.
 
-    An override replaces the whole list rather than filtering it, so asking for
-    `--batch-sizes 10` at 8192 still gets bs4 rather than nothing: the override
-    exists because bs10 does not fit, and silently producing no cell would read
-    as a matrix that shrank for no reason.
+    The override corrects the *default* matrix. An explicit `--batch-sizes`
+    wins: an operator narrowing a run to one cell means it, and silently
+    widening the request back out runs a cell they did not ask for — which, at
+    half an hour an 8k cell, is not a small surprise.
     """
     override = BATCH_OVERRIDES.get(input_len)
-    if override is None:
+    if override is None or not defaulted:
         return list(requested)
     if list(override) != list(requested):
         print(
@@ -1418,6 +1420,9 @@ def main(argv: list[str] | None = None) -> int:
 
     input_lens = [int(x) for x in args.input_lens.split(",") if x]
     batch_sizes = [int(x) for x in args.batch_sizes.split(",") if x]
+    # Whether `--batch-sizes` was typed or left at its default decides if
+    # `BATCH_OVERRIDES` may widen it; see `_batches_for`.
+    batches_defaulted = args.batch_sizes == ",".join(map(str, DEFAULT_BATCH_SIZES))
 
     # **A clamped engine does not measure the batch the cell is named for.**
     # `config.MAX_NUM_SEQS` is read from `DEEPSEEK_V41_MAX_NUM_SEQS` when the
@@ -1649,7 +1654,7 @@ def main(argv: list[str] | None = None) -> int:
         context = args.max_model_len or (
             input_len + args.output_len + CONTEXT_HEADROOM
         )
-        for batch in _batches_for(input_len, batch_sizes):
+        for batch in _batches_for(input_len, batch_sizes, batches_defaulted):
             name = f"in{input_len}_bs{batch}"
             run_cell(
                 name=name,
