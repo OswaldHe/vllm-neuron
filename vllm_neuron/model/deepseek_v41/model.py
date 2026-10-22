@@ -4785,14 +4785,37 @@ class DeepseekV41ForCausalLM(nn.Module):
         #
         # Built only when the bucket actually added a span, so the path every
         # batch-1 forward takes does not gain a device op it has no use for.
-        blank = (
+        # A **distinct** zero tensor per padded slot, not one shared object.
+        #
+        # Dynamo guards on which entries are the *same tensor*, and reports it
+        # as `Duplicate tensors found: ["paged[8].block_table",
+        # "paged[9].block_table"]`. The set of duplicates is a function of the
+        # live count, so one shared `blank` keys a separate 40-layer decode
+        # graph for `Running` = 10, 9, 8, 7 ... — which is the compile storm
+        # `_bucket_spans` above was written to end, surviving it because the
+        # span *count* was bucketed and the tensor *identity pattern* was not.
+        #
+        # Measured 2026-10-21 at `max_num_seqs=10`, one cold `in512_bs10` cell:
+        # 3456 duplicate-tensor guard failures, 63 new NEFFs a rank, and the
+        # engine reporting `generation throughput: 0.0 tokens/s` every time
+        # `Running` fell by one. Distinct objects make the duplicate set empty
+        # at every live count, so one graph serves them all.
+        #
+        # The cost is one `zeros_like` of a few kB per padded row, in host code
+        # (`_paged_spans` is `@torch._dynamo.disable`d), against a 163 s
+        # compile. All of them are still all-zero, so the aliasing argument
+        # above holds unchanged.
+        blanks = [
             torch.zeros_like(block_table[0])
-            if live_spans < len(spans)
-            else None
-        )
+            for _ in range(max(0, len(spans) - live_spans))
+        ]
         return [
             PagedSpan(
-                block_table=block_table[row] if row < live_spans else blank,
+                block_table=(
+                    block_table[row]
+                    if row < live_spans
+                    else blanks[row - live_spans]
+                ),
                 block_size=block_size,
                 slot_mapping=slot_mapping[begin : begin + length],
                 start_pos=start_pos,
