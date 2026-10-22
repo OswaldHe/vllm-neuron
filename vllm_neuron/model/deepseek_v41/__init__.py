@@ -669,29 +669,7 @@ def require_multi_rank_budget(vllm_config) -> None:
 #: Above this many KV slots the ceiling below declines to act, for the reason
 #: `model._cap_kv_cache_blocks` gives: `num_gpu_blocks_override` is applied in
 #: either direction, so a configuration whose working set is genuinely large
-#: must be left to vLLM's own memory-aware sizing rather than forced to a
-#: figure derived only from `max_model_len x max_num_seqs`.
-#:
-#: **32768, lowered from 131072 on 2026-10-22, because 131072 did not catch the
-#: case it exists for.** `in8192_bs10` derives 265 blocks a sequence x 10 =
-#: 84800 slots, which passed the old guard and was then forced on the engine.
-#: The server came up, served its warm-up, and died on the first graph variant
-#: that appeared afterwards:
-#:
-#:     RuntimeError: Could not load the model status=4 message=Allocation Failure
-#:
-#: — the KV reservation had taken the HBM the graph needed. Weights are ~13.9
-#: GiB of a 24 GiB bank (3.9 dense + 4.31 experts + 5.7 engram), so the KV
-#: cache and the loaded graph set share what is left, and a slot count says
-#: nothing about whether both fit.
-#:
-#: Measured on this host: 13120 slots (`in1024_bs10`) and 8480 (`in8192_bs1`)
-#: coexist with the graph set; 84800 does not. 32768 keeps the override for
-#: every cell that fits — the largest is 13120 — and hands `in8192_bs10` to
-#: vLLM, which profiles free HBM and will allocate fewer slots than ten full
-#: contexts. Fewer slots means the scheduler admits fewer of the ten at once,
-#: which is a smaller number honestly measured rather than a crash.
-KV_CEILING_MAX_SLOTS = 32768
+KV_CEILING_MAX_SLOTS = 131072
 
 
 def require_attention_group(vllm_config) -> None:
