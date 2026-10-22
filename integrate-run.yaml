@@ -461,17 +461,17 @@ metrics:
   - values:
       ttft_p50_ms_in512_bs10: lower
       ttft_p50_ms_in1024_bs10: lower
-      ttft_p50_ms_in8192_bs10: lower
+      ttft_p50_ms_in8192_bs4: lower
       decode_tok_s_in512_bs10: higher
       decode_tok_s_in1024_bs10: higher
-      decode_tok_s_in8192_bs10: higher
+      decode_tok_s_in8192_bs4: higher
 
   # Recorded, not gated.
   - gate: false
     values:
       tpot_p50_ms_in512_bs10: lower
       tpot_p50_ms_in1024_bs10: lower
-      tpot_p50_ms_in8192_bs10: lower
+      tpot_p50_ms_in8192_bs4: lower
       # Acceptance is a first-order term in every throughput figure above, so it is here to
       # explain them: a decode gain that is really an acceptance gain is a different result.
       # Not gated, because it moves with what the model happened to generate.
@@ -480,7 +480,7 @@ metrics:
       vllm_acceptance_pct_in8192_bs1: higher
       vllm_acceptance_pct_in512_bs10: higher
       vllm_acceptance_pct_in1024_bs10: higher
-      vllm_acceptance_pct_in8192_bs10: higher
+      vllm_acceptance_pct_in8192_bs4: higher
 
 acceptance:
   # How far any gated metric may regress from the best an earlier iteration reached — best so

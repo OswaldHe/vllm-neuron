@@ -67,6 +67,57 @@ DEFAULT_INPUT_LENS = (512, 1024, 8192)
 DEFAULT_BATCH_SIZES = (1, 10)
 DEFAULT_OUTPUT_LEN = 128
 
+#: Per-input-length replacements for the concurrent batch size, because the KV
+#: cache is **replicated on every one of the 64 ranks**, so a rank pays for
+#: every sequence's whole context rather than its share.
+#:
+#: `get_kv_spec` declares `num_kv_heads=1, head_size=512` with no world-size
+#: term, and it cannot shard by head: MLA has one 512-dim latent KV head and
+#: each rank needs all of it to reconstruct its own slice of the 64 query
+#: heads. The cost is exactly `1 x 512 x (K,V) x 2 B = 2048 B` a slot a layer,
+#: x 43 layers — which reproduces the engine's own figure to the decimal.
+#:
+#: Per rank, of a 24 GiB bank with 13.92 GiB of resident weights:
+#:
+#:     8448 x bs1     8480 slots   0.74 GiB KV   9.34 GiB left   ran
+#:     1280 x bs10   13120 slots   1.14 GiB KV   8.94 GiB left   ran
+#:     8448 x bs4    33920 slots   2.94 GiB KV   7.14 GiB left
+#:     8448 x bs10   84800 slots   7.35 GiB KV   2.73 GiB left   FAILED twice
+#:
+#: At bs10 the ten contexts leave too little for the graph set and the forward's
+#: own buffers, and it failed both ways round: forcing the KV figure died in
+#: `Executor` loading a NEFF ("Could not load the model status=4 message=
+#: Allocation Failure"), and letting vLLM size it died in `_fc_sum`'s
+#: `torch.empty` ("nrt_tensor_allocate status=4"). Measured 2026-10-22.
+#:
+#: bs4 keeps a real concurrency signal at 8k inside the budget. The honest fix
+#: is to stop replicating the cache — attention data parallelism or context
+#: parallelism, the two axes a single KV head leaves open, both of which
+#: DeepInfer implements — after which this override should go.
+BATCH_OVERRIDES = {8192: (1, 4)}
+
+
+def _batches_for(input_len: int, requested: tuple[int, ...] | list[int]):
+    """The batch sizes to run at `input_len`.
+
+    An override replaces the whole list rather than filtering it, so asking for
+    `--batch-sizes 10` at 8192 still gets bs4 rather than nothing: the override
+    exists because bs10 does not fit, and silently producing no cell would read
+    as a matrix that shrank for no reason.
+    """
+    override = BATCH_OVERRIDES.get(input_len)
+    if override is None:
+        return list(requested)
+    if list(override) != list(requested):
+        print(
+            f"bench: input {input_len} runs batch {','.join(map(str, override))} "
+            f"rather than {','.join(map(str, requested))} — the KV cache is "
+            f"replicated per rank; see BATCH_OVERRIDES",
+            file=sys.stderr,
+        )
+    return list(override)
+
+
 #: Measured passes per cell, after the discarded warm-up. Two, and the figure
 #: reported is the **second**: the first proves the warm-up finished the job and
 #: the second is read. See `_bench_cell`.
@@ -1598,7 +1649,7 @@ def main(argv: list[str] | None = None) -> int:
         context = args.max_model_len or (
             input_len + args.output_len + CONTEXT_HEADROOM
         )
-        for batch in batch_sizes:
+        for batch in _batches_for(input_len, batch_sizes):
             name = f"in{input_len}_bs{batch}"
             run_cell(
                 name=name,
