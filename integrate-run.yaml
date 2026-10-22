@@ -541,7 +541,145 @@ budget:
 # Prose attached to iteration ranges, injected into that iteration's prompt. Guidance only:
 # nothing checks it, and only the constraints and the metric gates decide what is kept. Slots
 # are indexed by iteration number, not by accepted count, and may not overlap.
-# iteration_constraints: []
+#
+# A ramp: one block type a slot, fewest kernels for the most blocks first, holding at full
+# coverage once it is reached. The point is a feedback signal with a moving edge — "types 1-N"
+# is a thing the agent can be asked about every iteration and answer concretely, where "fuse
+# more" is not.
+#
+# The ten types are the distinct Block *classes*: two blocks need two kernels only if something
+# they compute differs. Derived from config.py (`compress_ratios`, `engram_layer_ids`,
+# `kv_source_layer_ids`, `index_source_layer_ids`, `candidate_source_layer_id`,
+# `dspark_target_layer_ids`); ordered by block count descending, ties by lowest layer id.
+# Reproduce with ~/block_classes.py.
+#
+#   type  n   layers                            configuration
+#   ----------------------------------------------------------------------------------------
+#   1    15   3-7, 9-13, 15-19                  compress_ratio 2, nothing else
+#   2    12   21-23, 25-27, 29-31, 33-35        compress_ratio 1, nothing else
+#   3     4   24, 28, 32, 36                    compress_ratio 1 + index_source
+#   4     3   37-39                             compress_ratio 1 + dspark_tap
+#   5     3   40-42                             DSparkBlock, compress_ratio 0, 128-expert pool
+#   6     2   2, 8                              compress_ratio 2 + kv_source + index_source
+#   7     1   0                                 compress_ratio 0
+#   8     1   1                                 compress_ratio 0 + engram
+#   9     1   14                                compress_ratio 2 + engram + kv/index_source
+#  10     1   20                                compress_ratio 1 + kv/index/candidate_source
+#
+# Cumulative block coverage: 15, 27, 31, 34, 37, 39, 40, 41, 42, 43.
+#
+# `compress_ratio` is the only axis that changes a tensor shape, and it takes three values over
+# 43 blocks — so types 1, 2, 3, 4, 6, 9 and 10 differ from one another in which extra outputs
+# they produce, not in their core arithmetic. One parameterized kernel should serve several.
+#
+# Iteration 1 is deliberately uncovered: it was already running when this was written, and a
+# slot that never reaches a prompt is guidance you would believe was given.
+iteration_constraints:
+  - at: 2
+    enforcement: soft
+    text: |
+      Type 1 in pure NKI: layers 3-7, 9-13, 15-19 — 15 of 43 blocks, all
+      `compress_ratio` 2 with no engram, no kv/index source, no DSpark tap.
+      One kernel for the whole block, not a sequence of per-op kernel calls.
+      Start from `kernels/legacy/` (`moe_long/short.py`, `l*_attn.py`,
+      `hc_attn_in_*.py`) and adapt their constants; do not start from nothing.
+      Say how far you got even if it does not land.
+
+  - at: 3
+    enforcement: soft
+    text: |
+      Types 1-2 in pure NKI: layers 3-7, 9-13, 15-19 and 21-23, 25-27, 29-31,
+      33-35 — 27 of 43 blocks. Type 1 is `compress_ratio` 2, type 2 is
+      `compress_ratio` 1, and that is their only difference, so one kernel
+      parameterized on the ratio should serve both. These two classes are over
+      half the model; getting them fused is the single largest win available.
+
+  - at: 4
+    enforcement: soft
+    text: |
+      Types 1-3 in pure NKI: layers 3-7, 9-13, 15-19 and 21-36 — 31 of 43.
+      Type 3 is layers 24, 28, 32, 36: `compress_ratio` 1 like type 2, plus
+      they are `index_source` layers, so the block must also emit the indexer
+      input a later layer consumes. An extra output, not different arithmetic —
+      it should be an added return value on the type-2 kernel.
+
+  - at: 5
+    enforcement: soft
+    text: |
+      Types 1-4 in pure NKI: layers 3-7, 9-13, 15-19 and 21-39 — 34 of 43.
+      Type 4 is layers 37-39: `compress_ratio` 1, and the DSpark heads tap
+      their attention input (`dspark_target_layer_ids`), so the block emits the
+      tap as well. Again an extra output on the type-2 kernel.
+
+  - at: 6
+    enforcement: soft
+    text: |
+      Types 1-5 in pure NKI: layers 3-7, 9-13, 15-19 and 21-42 — 37 of 43.
+      Type 5 is the three MTP stages, layers 40-42: `DSparkBlock` over its own
+      128-expert pool at `compress_ratio` 0, five rows a draft. A different
+      class, but `kernels/legacy/dspark_attn.py` and `dspark_moe.py` were
+      written for exactly these stages. DSpark must stay live and accepted.
+
+  - at: 7
+    enforcement: soft
+    text: |
+      Types 1-6 in pure NKI: layers 2-7, 9-13, 15-19 and 21-42 — 39 of 43.
+      Type 6 is layers 2 and 8: `compress_ratio` 2 like type 1, plus both
+      `kv_source` and `index_source`, so two extra outputs on the type-1 kernel.
+
+  - at: 8
+    enforcement: soft
+    text: |
+      Types 1-7 in pure NKI: layers 0, 2-7, 9-13, 15-19 and 21-42 — 40 of 43.
+      Type 7 is layer 0 alone: `compress_ratio` 0, so no compressed KV at all.
+      The first block, and the one whose input is the embedding rather than a
+      previous block's stream.
+
+  - at: 9
+    enforcement: soft
+    text: |
+      Types 1-8 in pure NKI: layers 0-7, 9-13, 15-19 and 21-42 — 41 of 43.
+      Type 8 is layer 1 alone: `compress_ratio` 0 plus the Engram n-gram
+      memory, which is row-sharded across the 64 ranks with a masked gather and
+      an all-reduce. `kernels/legacy/engram_short/long.py` cover it. Every
+      rank's slice must contribute — a gather returning zeros on 63 of 64 ranks
+      is the failure mode.
+
+  - at: 10
+    enforcement: soft
+    text: |
+      Types 1-9 in pure NKI: layers 0-19 and 21-42 — 42 of 43. Type 9 is layer
+      14 alone, the busiest class: `compress_ratio` 2 plus Engram plus both
+      `kv_source` and `index_source`. It is type 1's kernel with the engram
+      sublayer of type 8 and two extra outputs.
+
+  - from: 11
+    to: 14
+    enforcement: soft
+    text: |
+      All ten types in pure NKI: every block, layers 0-42. Type 10 is layer 20
+      alone — `compress_ratio` 1 plus `kv_source`, `index_source` and
+      `candidate_source` (`candidate_topk_blocks` 2048), the only block that
+      emits the candidate set.
+
+      Full coverage is the target from here on. If a type is not fused yet, say
+      which and why, and spend the iteration on the one holding the most blocks.
+      Consolidating and profiling what is already fused is a legitimate use of
+      an iteration; a fused kernel nobody measured is not progress.
+
+  - from: 15
+    to: 16
+    enforcement: hard
+    text: |
+      HARD REQUIREMENT, final two iterations: all ten types in pure NKI — every
+      block, layers 0-42, each class one kernel rather than a sequence of
+      per-op calls.
+
+      Any type still unfused is the only thing worth working on. Do not start
+      anything new, do not refactor, do not chase a percent elsewhere. If one
+      cannot be finished, leave the tree passing every constraint and state
+      exactly which types are fused, which are not, and what the next run needs
+      to do — that handover is the deliverable if the kernels are not.
 
 # ── The reviewer ────────────────────────────────────────────────────────────────────────────
 #
