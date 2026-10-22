@@ -1022,9 +1022,20 @@ _EXPERT_USE_CEILING = 64
 #: the GEMM", and report both in `_hbm_mark`'s per-forward line.
 _EXPERT_TIMING = os.environ.get("DEEPSEEK_V41_TIME_EXPERTS", "0") != "0"
 
-#: `[fetch+stage, launch, read, host->device]` seconds since the last forward
-#: boundary. The first is the sum of the last two plus the cache lookup.
-_EXPERT_TIME = [0.0, 0.0, 0.0, 0.0]
+#: `[fetch+stage, launch, read, host->device, route sync, route plan]` seconds
+#: since the last forward boundary. The first is the sum of the next two plus
+#: the cache lookup.
+#:
+#: The last two are the per-block **host round-trip** in `_route_plan`, which
+#: iteration 1 left as the only unmeasured term of the decode step and the only
+#: eager code still on the per-block path. `route sync` is the two `.cpu()`
+#: calls — each drains the device, so 43 of them a forward means host and
+#: device never overlap — and `route plan` is the host-side `torch.where` loop
+#: and the two host-to-device copies a candidate expert that follow it. Read
+#: them off `_hbm_mark`'s per-forward line with
+#: `DEEPSEEK_V41_TIME_EXPERTS=1`; a decode forward is ~316 ms, of which ~82 ms
+#: is known to be the 43 world-wide all-reduces and ~2 ms the graph launches.
+_EXPERT_TIME = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 #: Layers at which `_census_device_tensors` reports. Early, middle and late, so
 #: the difference between them is what the layer loop accumulates.
@@ -1085,18 +1096,18 @@ def _hbm_mark(layer_id: int, rows: int) -> None:
                 "(%.0f%%), %d admitted, ~%.2f GiB fetched; prefetch %d served "
                 "(%d stalled, %d inline); gc %d collections in %.2f s"
                 "; experts %.1f s staging (%.1f read + %.1f h2d) "
-                "+ %.1f s launching",
+                "+ %.1f s launching; route %.3f s sync + %.3f s plan",
                 _HBM_STATE[0], hits, hits + misses,
                 100.0 * hits / max(1, hits + misses), admitted,
                 misses * _EXPERT_BYTES[0] / 1024**3,
                 served, stalled, inline,
                 _GC_STATE[0], _GC_STATE[1],
                 _EXPERT_TIME[0], _EXPERT_TIME[2], _EXPERT_TIME[3],
-                _EXPERT_TIME[1],
+                _EXPERT_TIME[1], _EXPERT_TIME[4], _EXPERT_TIME[5],
             )
         EXPERT_STREAM_STATS[:] = [0, 0, 0]
         _EXPERT_CACHE_STATS[:] = [0, 0, 0]
-        _EXPERT_TIME[:] = [0.0, 0.0, 0.0, 0.0]
+        _EXPERT_TIME[:] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         _GC_STATE[:] = [0, 0.0]
         _HBM_STATE[0] += 1
         _HBM_STATE[1] = None
@@ -2317,6 +2328,24 @@ def _routed_expert_step(
     return carry.index_add(0, rows, y.float())
 
 
+def _routed_expert_first(
+    flat, rows, route_weights, w1, s1, w2, s2, w3, s3, limit
+):
+    """`_routed_expert_step` against a zero carry it builds **inside its own
+    graph**, for the first expert of a block.
+
+    `_moe_carry` used to build that carry, and because `MoE`'s expert loop is
+    `@torch._dynamo.disable`d it was its own top-level graph execution — one a
+    block, 43 a forward, for a `zeros_like`. Folding it in here costs one more
+    shape key on an entry that already has one per row bucket (measured 3.45
+    variants a rank) and removes the launch.
+    """
+    return _routed_expert_step(
+        torch.zeros_like(flat, dtype=torch.float32), flat, rows, route_weights,
+        w1, s1, w2, s2, w3, s3, limit,
+    )
+
+
 def _routed_expert_step2(
     carry, flat, limit,
     rows_a, rw_a, w1a, s1a, w2a, s2a, w3a, s3a,
@@ -2350,7 +2379,7 @@ def _routed_expert_step3(
 
 #: Routed experts per graph execution. **1 is today's path, exactly.**
 #:
-#: Why this is the lever it is. Iteration 4 §3 priced one graph execution on
+#: Why this *might* be a lever. Iteration 4 §3 priced one graph execution on
 #: this deployment at ~1.12 ms, by measuring a configuration that adds 720 of
 #: them to a prefill and dividing. A 503-token prefill runs ~258
 #: `_routed_expert_step` executions (6 owned experts x 43 blocks), so the
@@ -2358,6 +2387,16 @@ def _routed_expert_step3(
 #: inside one of them has a roofline of ~154 us. Most of that 1.12 ms is
 #: therefore *not* arithmetic, and the only way to stop paying it is to issue
 #: fewer executions.
+#:
+#: **Iteration 1 falsified the premise of that paragraph** and
+#: `MoE.route_and_run`'s docstring has the measurement: removing 172 launches a
+#: forward moved TPOT by 1.1% and TTFT by 3.0%, which prices a launch at ~20 us
+#: at decode and ~150 us at prefill, not 1.12 ms. The 1.12 ms quotient counted
+#: the arithmetic of the 128-row GEMMs it added. So at `_EXPERT_FUSE=3` the
+#: honest expectation for 6 -> 2 launches a block is ~26 ms of an 833 ms TTFT
+#: (~3%) and nearly nothing at decode, against `(bucket, chunk length)` graph
+#: variants — worth measuring, not worth assuming. It is still **off**, and it
+#: is still not recorded anywhere whether anyone has ever measured it on.
 #:
 #: `_EXPERT_ROW_FLOOR` is **not** the lever, and its comment says why: the
 #: blockquant GEMM tiles the token axis at the 128-wide partition, so a bucket
@@ -2388,6 +2427,57 @@ def _shared_expert_step(carry, flat, ones, w1, s1, w2, s2, w3, s3, limit):
 def _moe_carry(flat):
     """The fp32 accumulator the routed experts scatter into."""
     return torch.zeros_like(flat, dtype=torch.float32)
+
+
+#: `(rows, width, device) -> an all-zero fp32 carry`, for the blocks where this
+#: rank owns none of the experts the router picked.
+_MOE_ZERO_CARRY: dict = {}
+
+#: Largest zero carry worth keeping. 4 MiB covers every decode shape this port
+#: serves — batch 10 at `dspark_block_size` 5 is 60 rows, 1.2 MiB — and leaves a
+#: prefill-sized one to `_moe_carry`. See `_moe_zero_carry`.
+_MOE_ZERO_CARRY_CAP_BYTES = 4 << 20
+
+
+def _moe_zero_carry(flat: torch.Tensor) -> torch.Tensor:
+    """A zero fp32 carry of `flat`'s shape, allocated once and shared.
+
+    Call only from eager code: this allocates.
+
+    Every step that consumes a carry — `_routed_expert_step`,
+    `_shared_expert_step` — is **out of place** (`index_add`, `+`), so nothing
+    on the forward path writes to a carry and one zero tensor a shape can serve
+    every block and every forward. That is what makes the k == 0 case free: at
+    batch 1 a rank owns 6 of 384 experts, so most of a decode step's 43 blocks
+    route to none of them and used to spend a whole graph execution on a
+    `zeros_like`.
+
+    Lazily keyed, and that is deliberate rather than incidental: a block with at
+    least one owned expert takes `_routed_expert_first` instead, so the only
+    shapes that *should* ever reach here are the small ones a decode step asks
+    for — 60 rows at batch 10 is 1.2 MiB. A prefill shape would be
+    `8448 x 5120` fp32 = **165 MiB a rank, held for the life of the process, that
+    nothing ever reads**, and it takes only one block out of 43 routing to none
+    of this rank's 6 experts to key it.
+
+    At 8192 tokens every one of the 384 experts is hit with overwhelming
+    probability, so that is a tail case rather than the normal path — but
+    `_CAP_BYTES` makes it one that cannot cost anything instead of one that is
+    merely unlikely. Over the cap, fall back to the launch this cache exists to
+    avoid. The 8k cells are the HBM-marginal ones (`in8192_bs10` had to be moved
+    to batch 4 because the KV cache is replicated per rank), and an unmeasured
+    165 MiB is not worth the ~20 us a launch costs.
+    """
+    key = (int(flat.shape[0]), int(flat.shape[1]), str(flat.device))
+    hit = _MOE_ZERO_CARRY.get(key)
+    if hit is None:
+        if flat.shape[0] * flat.shape[1] * 4 > _MOE_ZERO_CARRY_CAP_BYTES:
+            return _compiled(_moe_carry)(flat)
+        hit = torch.zeros(
+            flat.shape[0], flat.shape[1], dtype=torch.float32, device=flat.device
+        )
+        _MOE_ZERO_CARRY[key] = hit
+    return hit
 
 
 def _dspark_tap(stream):
@@ -2772,8 +2862,12 @@ class MoE(nn.Module):
             live_rows = override
         ids = indices if live_rows is None else indices[:live_rows]
         wts = weights if live_rows is None else weights[:live_rows]
+        mark = time.perf_counter() if _EXPERT_TIMING else 0.0
         ids_host = ids.cpu()
         wts_host = wts.cpu().float()
+        if _EXPERT_TIMING:
+            synced = time.perf_counter()
+            _EXPERT_TIME[4] += synced - mark
         device = indices.device
 
         candidates = [
@@ -2804,6 +2898,8 @@ class MoE(nn.Module):
                     padded_weights.to(device),
                 )
             )
+        if _EXPERT_TIMING:
+            _EXPERT_TIME[5] += time.perf_counter() - synced
         return plan
 
     @staticmethod
@@ -2856,7 +2952,76 @@ class MoE(nn.Module):
         tp_group=None,
         live_rows: int | None = None,
     ) -> torch.Tensor:
-        """Route to `num_experts_per_tok` of the pool, plus the shared expert."""
+        """Route to `num_experts_per_tok` of the pool, plus the shared expert.
+
+        The whole sublayer in one eager call, which is what `Block.forward`
+        wants. The hot path does not come through here: `_run_block` and
+        `DSparkBlock.forward` call `gate`, `route_and_run` and `finish`
+        separately so that only `route_and_run` — the part that genuinely needs
+        the host — is outside a traced region. See `route_and_run`.
+        """
+        weights, indices = self.gate(x.reshape(-1, self.hidden_size), image_mask)
+        carry, _, ones, shared_limit = self.route_and_run(
+            x, weights, indices, weight_store, live_rows
+        )
+        return self.finish(carry, x, shared_limit, ones, tp_group)
+
+    @torch._dynamo.disable
+    def route_and_run(
+        self,
+        x: torch.Tensor,
+        weights: torch.Tensor,
+        indices: torch.Tensor,
+        weight_store,
+        live_rows: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """This rank's routed experts, summed into an fp32 carry.
+
+        **The only part of the FFN that has to be eager**, and the reason the
+        rest of it moved out. `MoE` is `@torch._dynamo.disable`d because
+        `_route_plan` reads the router's choice on the host — `indices.cpu()` —
+        and then issues a data-dependent number of launches. Dynamo therefore
+        treats *every* `_compiled(...)` call made from here as its own top-level
+        graph execution, where the same call made from traced code is inlined
+        into the surrounding graph for free. A bench server log shows exactly
+        that split: `_gate_step`, `_moe_carry`, `_fc_sum`, `_shared_expert_step`
+        and `_moe_narrow` each appear in dynamo's `__recompiles` log as their own
+        frame, while `_post_into`, `attn_half` and every `_nki_entry` reached
+        from `_run_block` appear not at all.
+
+        So the gate moved into `Block.attn_half` (it reads that graph's own
+        output), the all-reduce, the shared expert and the dtype cast moved into
+        `finish` (traced, inlined beside `_post_into`), and the carry moved into
+        `_routed_expert_first` / `_moe_zero_carry`. What is left here is the
+        routed loop itself, whose length is the router's output.
+
+        **What that bought, and the cost model it corrects.** The split removed
+        172 of a decode step's ~270 launches and 172 of a 503-token prefill's
+        ~516, at `in512_bs1`:
+
+            TTFT p50   859.6 ms -> 833.4 ms   (-3.0%)
+            TPOT p50   103.5 ms -> 102.4 ms   (-1.1%)
+            decode      9.233   ->   9.36 tok/s  (+1.4%)
+
+        Both measured passes agreed to 1% with CLEAN windows. Divide it out and a
+        top-level graph launch costs **~20 us at decode** (-3.4 ms a forward over
+        172 launches at acceptance length 3.09) and **~150 us at prefill**, where
+        the inlined boundaries also stop round-tripping a `[503, 5120]` fp32
+        activation through HBM.
+
+        That is ~50x less than the `~1.12 ms a graph execution` that
+        `_EXPERT_FUSE`'s comment below attributes to iteration 4 §3. **That figure
+        is an artifact of how it was taken** — 720 launches were added to a
+        prefill and the time divided by 720, but each added launch was a 128-row
+        fp4 expert GEMM, so the quotient is mostly arithmetic and weight traffic
+        rather than launch overhead. Counting launches is not a cost model here;
+        `.autohelix/notes/iter-1.md` §3 has what is and is not yet attributed of
+        the ~316 ms decode forward.
+
+        Returns `(carry, routed_limit, ones, shared_limit)`. The three constants
+        come back because `swiglu_consts` allocates and so cannot be called from
+        the traced `finish`.
+        """
         if weight_store is None and not self.resident:
             raise RuntimeError(
                 f"layer {self.layer_id} MoE has no weight store and its expert "
@@ -2864,9 +3029,7 @@ class MoE(nn.Module):
                 "load_weights() must have attached one. Running without it "
                 "would mean running without the experts."
             )
-        shape = x.shape
         flat = x.reshape(-1, self.hidden_size)
-        weights, indices = self.gate(flat, image_mask)
         plan = self._route_plan(indices, weights, live_rows, weight_store)
         if _PP_EMULATE > 1 and not self.is_mtp:
             # A rank of a `64 // p`-wide tensor-parallel group owns
@@ -2879,7 +3042,7 @@ class MoE(nn.Module):
             # latency probe and says so.
             plan = list(plan) * _PP_EMULATE
 
-        y = _compiled(_moe_carry)(flat)
+        y = None
         limit, ones = swiglu_consts(self.expert_slot.swiglu_limit, flat.device)
         for chunk in self._expert_chunks(plan):
             mark = time.perf_counter() if _EXPERT_TIMING else 0.0
@@ -2887,14 +3050,20 @@ class MoE(nn.Module):
             staged = time.perf_counter() if _EXPERT_TIMING else 0.0
             if len(chunk) == 1:
                 (_, rows, route_weights), slot = chunk[0], slots[0]
-                y = _compiled(_routed_expert_step)(
-                    y, flat, rows, route_weights,
+                expert_args = (
+                    flat, rows, route_weights,
                     slot.w1.weight, slot.w1.scale,
                     slot.w2.weight, slot.w2.scale,
                     slot.w3.weight, slot.w3.scale,
                     limit,
                 )
+                if y is None:
+                    y = _compiled(_routed_expert_first)(*expert_args)
+                else:
+                    y = _compiled(_routed_expert_step)(y, *expert_args)
             else:
+                if y is None:
+                    y = _compiled(_moe_carry)(flat)
                 args: list = []
                 for (_, rows, route_weights), slot in zip(chunk, slots):
                     args += [
@@ -2912,19 +3081,46 @@ class MoE(nn.Module):
         if weight_store is not None and not self.resident:
             weight_store.end_expert_loop()
 
+        if y is None:
+            # This rank owns none of the experts this block's router picked —
+            # the common case at batch 1, where a rank holds 6 of 384. Its
+            # contribution to the world-wide sum is zeros, and a shared zero
+            # tensor is as good as a freshly launched one because nothing
+            # downstream writes to a carry.
+            y = _moe_zero_carry(flat)
+        shared_limit, _ = swiglu_consts(self.shared_experts.swiglu_limit, flat.device)
+        return y, limit, ones, shared_limit
+
+    def finish(
+        self,
+        carry: torch.Tensor,
+        x: torch.Tensor,
+        shared_limit: torch.Tensor,
+        ones: torch.Tensor,
+        tp_group=None,
+    ) -> torch.Tensor:
+        """Rejoin the expert shards, add the shared expert, cast back.
+
+        **Call this from traced code.** Every step in it — the all-reduce, the
+        shared expert's three GEMMs, the dtype cast — is then inlined into the
+        caller's graph instead of being three separate launches, which is the
+        whole point of `route_and_run` returning a carry rather than a result.
+        Reached from eager code (`MoE.forward`) it still works and still costs
+        the three launches.
+        """
+        flat = x.reshape(-1, self.hidden_size)
         if tp_group is not None and self.n_local_experts != self.n_routed_experts:
-            y = tp_all_reduce(y, tp_group)
+            carry = tp_all_reduce(carry, tp_group)
 
         shared = self.shared_experts
-        shared_limit, _ = swiglu_consts(shared.swiglu_limit, flat.device)
-        y = _compiled(_shared_expert_step)(
-            y, flat, ones,
+        carry = _compiled(_shared_expert_step)(
+            carry, flat, ones,
             shared.w1.weight, shared.w1.scale,
             shared.w2.weight, shared.w2.scale,
             shared.w3.weight, shared.w3.scale,
             shared_limit,
         )
-        return _compiled(_moe_narrow)(y, x.dtype).reshape(shape)
+        return _compiled(_moe_narrow)(carry, x.dtype).reshape(x.shape)
 
 
 def _next_prime(start: int, seen: set[int]) -> int:
@@ -3356,7 +3552,15 @@ class Block(nn.Module):
         self, stream, pre_mix, slices, paged, shared: list, tp_group,
         out_residual=None, out_normed=None,
     ):
-        """Everything from the stream to the MoE's normalized input."""
+        """Everything from the stream to the MoE's routing decision.
+
+        The router is in here rather than in `MoE` because it reads this graph's
+        own last value and produces 6 ints a row. As a separate entry point
+        called from the dynamo-disabled `MoE` it was a whole graph execution a
+        block; inlined here it is free. `MoE.route_and_run` takes the result as
+        an argument, and its docstring has what that and the rest of the split
+        were worth.
+        """
         batched = stream.unsqueeze(0)
         residual = batched
         attn_pre, attn_post, attn_comb = self.hc_attn.mixes(batched)
@@ -3368,11 +3572,17 @@ class Block(nn.Module):
         residual = batched
         ffn_pre, ffn_post, ffn_comb = self.hc_ffn.mixes(batched)
         normed = self.ffn_norm(HyperConnections.pre(batched, attn_pre))
+        route_w, route_i = self.ffn.gate(
+            normed.reshape(-1, self.ffn.hidden_size), None
+        )
         if out_residual is None:
-            return normed, residual, ffn_pre, ffn_post, ffn_comb
+            return normed, residual, ffn_pre, ffn_post, ffn_comb, route_w, route_i
         out_residual.copy_(residual)
         out_normed.copy_(normed)
-        return out_normed, out_residual, ffn_pre, ffn_post, ffn_comb
+        return (
+            out_normed, out_residual, ffn_pre, ffn_post, ffn_comb,
+            route_w, route_i,
+        )
 
     def _attn_rows(self, normed, slices, paged, shared, tp_group):
         """The attention sublayer's output for every row of `normed`.
@@ -3618,7 +3828,14 @@ class DSparkBlock(Block):
         ffn_pre, ffn_post, ffn_comb = self.hc_ffn.mixes(x)
         y = HyperConnections.pre(x, attn_pre)
         y = self.ffn_norm(y)
-        y = self.ffn(y, None, weight_store, tp_group)
+        # Split the same way `_run_block` splits it: this method is traced, so
+        # the router and `finish` are inlined here and only the routed-expert
+        # loop pays a launch. Three stages a draft, five rows each — all launch.
+        route_w, route_i = self.ffn.gate(y.reshape(-1, self.ffn.hidden_size), None)
+        carry, _, ones, shared_limit = self.ffn.route_and_run(
+            y, route_w, route_i, weight_store, None
+        )
+        y = self.ffn.finish(carry, y, shared_limit, ones, tp_group)
         x = HyperConnections.post(y, residual, ffn_post, ffn_comb)
         return x, ffn_pre
 
@@ -5064,10 +5281,20 @@ class DeepseekV41ForCausalLM(nn.Module):
         # what this selects is the expert-parallel all-reduce inside `MoE`.
         tp_group = self.stage_group if self.world_size > 1 else None
         io_stream, io_residual, io_normed = self._layer_io(stream)
-        normed, residual, ffn_pre, ffn_post, ffn_comb = _block_entry(
-            block, "attn_half"
-        )(stream, pre_mix, slices, paged, shared, tp_group, io_residual, io_normed)
-        ffn_out = block.ffn(normed, None, self.weight_store, tp_group, row_count)
+        (
+            normed, residual, ffn_pre, ffn_post, ffn_comb, route_w, route_i,
+        ) = _block_entry(block, "attn_half")(
+            stream, pre_mix, slices, paged, shared, tp_group,
+            io_residual, io_normed,
+        )
+        # Only the routed-expert loop is eager. `MoE.finish` runs here, in the
+        # same traced region as `_post_into`, so its all-reduce, shared expert
+        # and dtype cast are inlined into one graph instead of being three more
+        # launches a block — see `MoE.route_and_run` for the measurement.
+        carry, _, ones, shared_limit = block.ffn.route_and_run(
+            normed, route_w, route_i, self.weight_store, row_count
+        )
+        ffn_out = block.ffn.finish(carry, normed, shared_limit, ones, tp_group)
         return _compiled(_post_into)(
             io_stream, ffn_out, residual, ffn_post, ffn_comb
         ), ffn_pre.squeeze(0)
