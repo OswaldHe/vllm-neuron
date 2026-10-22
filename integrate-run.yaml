@@ -723,19 +723,37 @@ reviewer:
   prompt: |
     Review the iteration: what changed, what it bought, what it cost, with numbers.
 
-    You do NOT have the device. The iteration owned it for four hours and was told to leave
-    its profile behind in `/mnt/nvme/profiles/iter-<N>/`. Do not start a server, a bench or a
-    verifier — a 64-rank server alone is a 20-40 minute cold compile and you would be holding
-    the cores the next iteration needs.
+    - Analyse the profile the iteration captured in `/mnt/nvme/profiles/iter-<N>/` — ingest
+      and query it with `neuron-framework-profile-analysis-vllm-neuron` (or
+      `neuron-nki-profile-analysis` for a single kernel) and name the operator that binds
+      now. If the change did not move the binding operator, say so plainly.
 
-    - Analyse the profile the iteration captured — ingest and query it with
-      `neuron-framework-profile-analysis-vllm-neuron` (or `neuron-nki-profile-analysis` for a
-      single kernel) and name the operator that binds now. If the change did not move the
-      binding operator, say so plainly.
-    - IF THERE IS NO PROFILE, THAT IS A FINDING. Say that the iteration changed the model
-      without measuring where its time goes, and weigh its claims accordingly: a kernel
-      rewrite justified by reasoning alone is a guess that happened to pass a gate. Check
-      `/mnt/nvme/profiles/` and the iteration's own report before concluding one is absent.
+    - FIRST CHECK THE PROFILE IS OF THE TREE YOU ARE REVIEWING, because an out-of-date one
+      answers a question nobody asked. Iteration 2's capture was clean and complete and
+      still described the *previous* iteration's tree. Two tests, both cheap:
+        * the capture's own server log: `0 "Local cache miss"` with thousands of hits means
+          it replayed NEFFs that predate the edits;
+        * file mtimes — every file the diff touched, against the capture's finish time. If
+          any edit is newer than the capture, the profile is stale.
+
+    - IF THE PROFILE IS MISSING OR STALE, CAPTURE ONE YOURSELF rather than reviewing without
+      attribution. Run `neuron-framework-profiling-vllm-neuron` (the capture skill, or its
+      subagent) against the iteration's tree, then attribute it with
+      `neuron-framework-profile-analysis-vllm-neuron`. Write it to
+      `/mnt/nvme/profiles/iter-<N>-review/` so it is distinguishable from the iteration's
+      own. Capture prefill and decode separately; they bind on different operators.
+
+      Two things will waste the whole capture if you skip them. **The compile cache key does
+      not hash the NKI kernel body** — editing a kernel and re-running can give 0 misses and
+      thousands of hits, replaying pre-edit NEFFs, which is exactly how iteration 2's
+      profile went stale. Force a cold build or verify misses appear, or you will profile
+      code that is not in the tree. And **release the cores when you are done**: a 64-rank
+      server is a 20-40 minute cold compile and the next iteration cannot start while you
+      hold them, so capture the two windows you need and tear the server down.
+
+      Still record it as a finding that the iteration did not leave a usable profile. Doing
+      its measurement for it does not make the omission disappear — an iteration that
+      changed a kernel without profiling the result was reasoning, not measuring.
     - Separate device-side gains from host-side ones, and check the measured windows were
       clean. A dirty window is not a measurement, and a gain that is really an acceptance
       change is not a gain in the kernel.
@@ -751,7 +769,15 @@ reviewer:
     - Name the next fusion to attempt — within a block, then across blocks — with its expected
       impact and whether it fits one iteration.
   model: claude-sonnet-5
-  # 5400 s. Ingesting and querying a 64-rank trace with `neuron-explorer` is the long pole,
-  # and 3000 s was sized for a reviewer that only read the diff. It does not need a server
-  # start: the iteration captures the profile, the reviewer reads it.
-  timeout_seconds: 5400
+  # 7200 s, and the ceiling is sized for the worst case rather than the normal one. Normally
+  # the iteration leaves a usable profile and the reviewer only ingests and queries it, which
+  # is what 5400 s covered. But it is now told to capture its own when the iteration's is
+  # missing or stale, and that needs a 64-rank server: a 20-40 minute cold compile after a
+  # kernel change, two capture windows, then ingest. At 5400 s that path runs out of budget
+  # part-way and leaves a half-attributed review plus a server to clean up.
+  #
+  # The cost is real and worth naming: an iteration whose profile is stale now delays the
+  # next one by up to two hours of device time. That is the incentive working as intended —
+  # it is cheaper for the iteration to capture its own profile than to have the reviewer
+  # redo it, and the goal prompt tells it so.
+  timeout_seconds: 7200
