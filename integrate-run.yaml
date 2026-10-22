@@ -294,7 +294,11 @@ constraints:
       establish it from the code.
     model: claude-sonnet-5
     effort: medium
-    timeout: 900
+    # 900 s was not enough: on the baseline the judge wrote a PASS verdict at 13 min and was
+    # killed before the harness reaped it, so a passing constraint was recorded as "the judge
+    # did not finish". Seven components over a 5k-line model.py is a long read; give it 30 min.
+    # This judge touches no device, so the cost is wall clock on an otherwise idle gate step.
+    timeout: 1800
 
   # ── DISABLED 2026-10-19 by the operator ────────────────────────────────────────────────
   # The floorplan and the two named factorizations are now *suggestions in the goal*, not a
