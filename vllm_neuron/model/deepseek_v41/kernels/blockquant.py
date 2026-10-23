@@ -173,23 +173,84 @@ def _decode_e4m3(byte_tile, rows, k):
     return bits.view(nl.bfloat16)
 
 
-def _dequant_fp8(w_u8, s_u8, dst_hbm, n, k):
-    """fp8 `[n, k]` with a `32 x 32`-tile e8m0 scale, into a bf16 HBM scratch."""
+def _scale_is_rowwise(n, scale):
+    """Is this scale operand one bf16 value a *weight row*, not one e8m0 code
+    per `32 x 32` block?
+
+    `model.BlockQuantLinear.expand_scale` builds the row-wise form once at load
+    time — `[n, k // BLK]` bf16, already holding `2**(code - 7)` — so the GEMM
+    loads it instead of rebuilding it out of the stored codes inside every
+    forward. The stored form is `[ceil(n / BLK), k // BLK]` uint8, so the row
+    count tells the two apart and `n == ceil(n / BLK)` only at `n = 1`, which
+    no weight here has. The test is on a *shape*, so it resolves at trace time
+    and a compiled graph holds one arm, never a branch.
+    """
+    return scale.shape[0] == n
+
+
+def _blocked_sf(s_u8, nb, rows, kb, nsb):
+    """`2**(code - 7)` a weight row, rebuilt from the stored e8m0 codes.
+
+    Four instructions per `BLK` rows: load the code row, turn it into an fp32
+    power of two by writing its exponent field, and partition-broadcast it over
+    the `BLK` weight rows that share it. Iteration 5 measured this at 46.8 ms of
+    summed engine time and 296 k instructions a decode forward, which is what
+    `_rowwise_sf` replaces with one load. Kept as the arm
+    `DEEPSEEK_V41_FP8_ROWSCALE=0` selects, and as the definition the load-time
+    expansion is checked against.
+    """
+    sf = nl.ndarray((rows, kb), dtype=nl.bfloat16, buffer=nl.sbuf)
+    for i in nl.static_range(nsb):
+        sb = nl.load(s_u8[nb * nsb + i : nb * nsb + i + 1, 0:kb], dtype=nl.int32)
+        one = nl.copy(nl.left_shift(nl.add(sb, SC_EXP_ADD), 23)).view(nl.float32)
+        nisa.tensor_copy(
+            dst=sf[i * BLK : (i + 1) * BLK, 0:kb],
+            src=nl.broadcast_to(one, (BLK, kb)),
+        )
+    return sf
+
+
+def _rowwise_sf(s_bf16, nb, rows, kb):
+    """The same `sf`, read straight out of the expanded scale."""
+    return nl.load(s_bf16[nb * rows : (nb + 1) * rows, 0:kb], dtype=nl.bfloat16)
+
+
+#: **Measured, so nobody tries it again:** `rep.reshape((rows, k))` below, on a
+#: stride-0 `broadcast_to` view, is **not** a materialization. Iteration 5
+#: looked at the 11.88 ms of engine time a decode forward the profile attributes
+#: to the `broadcast_to` line and guessed it was the reshape forcing a full
+#: `[rows, k]` bf16 tile — `_dequant_fp4`, forty lines below, passes the 3-D
+#: view straight to `nisa.tensor_tensor` instead and reshapes only the
+#: contiguous product. Both forms were built, proved bit-identical on device at
+#: 5 geometries x 3 row counts, and captured on a live 64-rank server: the
+#: profile puts them at **11.88 against 11.86 ms a forward and 11,282 against
+#: 11,282 instructions a forward on that line**, with `blockquant`'s whole-file
+#: instruction count identical at 425,940 a forward. The compiler lowers the two
+#: forms to the same instruction stream, so that 11.88 ms is the multiply's real
+#: operand cost and not an avoidable copy.
+#: See `.autohelix/notes/iter-5.md` §8.
+
+
+def _dequant_fp8(w_u8, s, dst_hbm, n, k):
+    """fp8 `[n, k]` with a `32 x 32`-tile e8m0 scale, into a bf16 HBM scratch.
+
+    `s` is either the stored `[ceil(n / BLK), k // BLK]` e8m0 codes or the
+    row-wise bf16 expansion of them; see `_scale_is_rowwise`. Both arms produce
+    a bit-identical `sf`, so the rest of the kernel is unchanged by the choice.
+    """
     kb = k // BLK
     rows = PT if n % PT == 0 else BLK
     nsb = rows // BLK
+    rowwise = _scale_is_rowwise(n, s)
     for nb in nl.affine_range(n // rows):
         wq = _decode_e4m3(
             nl.load(w_u8[nb * rows : (nb + 1) * rows, 0:k], dtype=nl.uint8), rows, k
         )
-        sf = nl.ndarray((rows, kb), dtype=nl.bfloat16, buffer=nl.sbuf)
-        for i in nl.static_range(nsb):
-            sb = nl.load(s_u8[nb * nsb + i : nb * nsb + i + 1, 0:kb], dtype=nl.int32)
-            one = nl.copy(nl.left_shift(nl.add(sb, SC_EXP_ADD), 23)).view(nl.float32)
-            nisa.tensor_copy(
-                dst=sf[i * BLK : (i + 1) * BLK, 0:kb],
-                src=nl.broadcast_to(one, (BLK, kb)),
-            )
+        sf = (
+            _rowwise_sf(s, nb, rows, kb)
+            if rowwise
+            else _blocked_sf(s, nb, rows, kb, nsb)
+        )
         rep = nl.broadcast_to(sf.reshape((rows, kb, 1)), (rows, kb, BLK))
         prod = nl.ndarray((rows, k), dtype=nl.bfloat16, buffer=nl.sbuf)
         nisa.tensor_tensor(
@@ -471,17 +532,22 @@ def _fp8_2core_span(w, scale, programs, core):
     which is four whole `BLK = 32` scale rows. `_dequant_fp8` then takes
     `rows = PT` on the slice, exactly as it does on the whole weight, so the
     per-tile arithmetic inside it is unchanged rather than merely equivalent.
+
+    A **row-wise** scale (`_scale_is_rowwise`, one bf16 value a weight row) is
+    indexed by the weight row instead, so the division by `BLK` is exactly
+    what must *not* happen to it. This is the one place the two forms are
+    indexed differently, which is why it asks rather than assuming.
     """
     n = w.shape[0]
     k = w.shape[1]
     span = n // programs
     lo = core * span
-    return (
-        span,
-        lo,
-        w[lo : lo + span, 0:k],
-        scale[lo // BLK : (lo + span) // BLK],
+    s_share = (
+        scale[lo : lo + span]
+        if _scale_is_rowwise(n, scale)
+        else scale[lo // BLK : (lo + span) // BLK]
     )
+    return (span, lo, w[lo : lo + span, 0:k], s_share)
 
 
 def _fp8_2core_check(programs, n, name):

@@ -681,6 +681,45 @@ def nki_linear(
 _EXPERT_KMAJOR = os.environ.get("DEEPSEEK_V41_EXPERT_KMAJOR", "1") != "0"
 
 
+#: Expand every fp8 weight's `32 x 32`-block e8m0 scale **once at load time**
+#: into one bf16 value a weight row, and let the GEMM kernels load that instead
+#: of rebuilding it inside every forward. See `BlockQuantLinear.expand_scale`
+#: and `blockquant._scale_is_rowwise`.
+#:
+#: **Why this is the cheapest full pass in the model to delete.** The stored
+#: scale depends only on the weights, so rebuilding it per GEMM per forward is
+#: the hints' "do not materialize what you can apply" with the cheaper answer
+#: being the other direction: derive it once from data that never changes.
+#: Iteration 5's decode profile attributed **46.8 ms of summed engine time and
+#: 296,451 instructions a forward** to the four instructions
+#: `blockquant._blocked_sf` issues (`nl.load` the codes, `left_shift(add(..)))`,
+#: `tensor_copy`, `broadcast_to`), against **6.5 ms and 8,414** for the single
+#: `nl.load` that replaces them. Across the whole decode forward, on two
+#: captures of the same tree: `blockquant`'s instructions **889,569 -> 425,940
+#: (-52.1%)** and its engine time **172.95 -> 123.95 ms (-28.3%)**,
+#: engine-active union **122.65 -> 105.38 ms (-14.1%)**, device-busy
+#: **248.79 -> 244.06 ms (-1.9%)**, and the same arithmetic (0.983 -> 0.972
+#: TFLOP), the same 93 barriers and the same 32 distinct NEFFs a forward. End to
+#: end, a 200-token request went **21.19 s -> 19.29 s (-9.0%)**. The
+#: second-order half of the win is the semaphore waits those 288 k producer
+#: instructions carried: the `sync` engine dropped 290,241 -> 186,942
+#: instructions a forward.
+#:
+#: **Do not quote a `window / forwards` figure for this change.** That metric
+#: carries the profiler's own `nrt_profile_add_node_info`, which differed by
+#: 74.7 ms between two captures of an instruction-for-instruction identical
+#: stream and moved the metric 7.1%; see `.autohelix/notes/iter-5.md` §7b.
+#:
+#: It costs **175.6 MiB a rank across 355 tensors** — the expansion is
+#: `weight_bytes / 16` against the codes' `weight_bytes / 1024` — and the decode
+#: profile shows the matching extra HBM read (+0.148 GB a forward) for the
+#: instructions it removes. The stored codes are kept, so `dequantized()` and
+#: `DEEPSEEK_V41_FP8_ROWSCALE=0` both still work; the flag restores the old path
+#: exactly, and because the arm is chosen from a *shape* it is resolved at trace
+#: time rather than per call.
+_FP8_ROWSCALE = os.environ.get("DEEPSEEK_V41_FP8_ROWSCALE", "1") != "0"
+
+
 class BlockQuantLinear(nn.Module):
     """A linear whose weight is stored block-scaled, as the checkpoint has it.
 
@@ -751,6 +790,51 @@ class BlockQuantLinear(nn.Module):
         for name, shape, buffer_dtype in self._specs:
             setattr(self, name, torch.zeros(shape, dtype=buffer_dtype, device=device))
 
+    @property
+    def fp8_scale(self) -> torch.Tensor | None:
+        """The scale operand to hand `blockquant`'s GEMMs.
+
+        The row-wise bf16 expansion once `expand_scale` has run, the stored
+        e8m0 codes until then, and `None` for a bf16 weight that has no scale.
+        A non-fp8 storage never has an expansion and so returns what it stores.
+        """
+        expanded = getattr(self, "row_scale", None)
+        return getattr(self, "scale", None) if expanded is None else expanded
+
+    def expand_scale(self) -> int:
+        """Build the row-wise bf16 scale for an fp8 weight. Returns its bytes.
+
+        The device arm this replaces (`blockquant._blocked_sf`) evaluates, in
+        int32, `((code + SC_EXP_ADD) << 23)` viewed as fp32 and narrowed to
+        bf16. **This evaluates the same int32 expression rather than a tidier
+        `2.0 ** (code - 7)`**, and that is deliberate: at `code > 135` the add
+        passes 255 and the shift walks into the sign bit, so a "correct" host
+        implementation would disagree with the device on exactly those codes and
+        nothing in this repo would catch it. Checked bit-identical over the
+        codes the checkpoint holds, a wide range and the full `0..255`.
+
+        The `[1, kb]` code row shared by `BLK` weight rows becomes `BLK`
+        identical bf16 rows, truncated to `out_features` because the stored
+        scale has `ceil(out / BLK)` rows and the kernel only ever reads the
+        first `out` of them.
+        """
+        if self.storage != "fp8" or not _FP8_ROWSCALE:
+            return 0
+        scale = getattr(self, "scale", None)
+        if scale is None or scale.is_meta:
+            return 0
+        from .kernels.blockquant import SC_EXP_ADD
+
+        # `.to("cpu", torch.int32)` would convert the dtype **on the device**,
+        # which this backend has no kernel for; copy first, convert on the host.
+        codes = scale.detach().to("cpu").to(torch.int32)
+        bits = (codes + SC_EXP_ADD) << 23
+        rows = bits.view(torch.float32).to(torch.bfloat16)
+        rows = rows.repeat_interleave(self.block, dim=0)[: self.out_features]
+        expanded = rows.contiguous().to(scale.device)
+        self.register_buffer("row_scale", expanded, persistent=False)
+        return expanded.numel() * expanded.element_size()
+
     def dequantized(self, dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
         """The weight in `dtype`."""
         from .weight_loader import dequant_block_fp4, dequant_block_fp8
@@ -780,9 +864,7 @@ class BlockQuantLinear(nn.Module):
                 "read the checkpoint's `[out, in//2]` layout. Route it through "
                 "`_routed_expert_step`, or set DEEPSEEK_V41_EXPERT_KMAJOR=0."
             )
-        return nki_linear(
-            x, self.weight, getattr(self, "scale", None), self.storage
-        )
+        return nki_linear(x, self.weight, self.fp8_scale, self.storage)
 
     def grouped(self, x: torch.Tensor, group: int, width: int) -> torch.Tensor:
         """One block of a block-diagonal projection: rows
@@ -792,11 +874,15 @@ class BlockQuantLinear(nn.Module):
             raise ValueError(f"grouped() is for fp8 storage, not {self.storage!r}")
         if width % self.block:
             raise ValueError(f"group width {width} must be a multiple of {self.block}")
-        band = width // self.block
+        scale = self.fp8_scale
+        # A row-wise scale is indexed by weight row, the stored codes by
+        # 32-row block — the same distinction `_fp8_2core_span` makes.
+        rowwise = scale.shape[0] == self.out_features
+        step = width if rowwise else width // self.block
         return nki_linear(
             x,
             self.weight[group * width : (group + 1) * width],
-            self.scale[group * band : (group + 1) * band],
+            scale[group * step : (group + 1) * step],
             "fp8",
             quantize_activation=False,
         )
@@ -2818,9 +2904,9 @@ class Expert(nn.Module):
         return _swiglu_expert(
             x,
             ones if weights is None else weights,
-            self.w1.weight, self.w1.scale,
-            self.w2.weight, self.w2.scale,
-            self.w3.weight, self.w3.scale,
+            self.w1.weight, self.w1.fp8_scale,
+            self.w2.weight, self.w2.fp8_scale,
+            self.w3.weight, self.w3.fp8_scale,
             self.w1.storage,
             limit,
         )
@@ -3287,9 +3373,9 @@ class MoE(nn.Module):
         shared = self.shared_experts
         carry = _compiled(_shared_expert_step)(
             carry, flat, ones,
-            shared.w1.weight, shared.w1.scale,
-            shared.w2.weight, shared.w2.scale,
-            shared.w3.weight, shared.w3.scale,
+            shared.w1.weight, shared.w1.fp8_scale,
+            shared.w2.weight, shared.w2.fp8_scale,
+            shared.w3.weight, shared.w3.fp8_scale,
             shared_limit,
         )
         return _compiled(_moe_narrow)(carry, x.dtype).reshape(x.shape)
@@ -4764,6 +4850,34 @@ class DeepseekV41ForCausalLM(nn.Module):
             own_bytes / 2**30,
         )
 
+
+    def expand_fp8_scales(self) -> None:
+        """Expand every resident fp8 weight's block scale to one value a row.
+
+        Called once from `weight_loader.load_weights`, after the checkpoint has
+        landed in the buffers and before anything runs a forward, so that no
+        GEMM ever rebuilds the scale. See `_FP8_ROWSCALE` for what it buys and
+        what it costs. Routed experts are fp4 and have no expansion, so a
+        streamed expert staged later by `MoE._stage` cannot go stale.
+        """
+        if not _FP8_ROWSCALE:
+            return
+        count = 0
+        total = 0
+        for module in self.modules():
+            if isinstance(module, BlockQuantLinear) and module.storage == "fp8":
+                written = module.expand_scale()
+                if written:
+                    count += 1
+                    total += written
+        if count:
+            logger.info(
+                "deepseek_v41: expanded %d fp8 block scales to one bf16 value "
+                "a weight row, %.1f MiB a rank — the forward no longer "
+                "rebuilds them",
+                count,
+                total / 2**20,
+            )
 
     def allocate_staging_buffers(self, device: torch.device) -> None:
         """Materialize the per-layer expert staging slots on `device`.
