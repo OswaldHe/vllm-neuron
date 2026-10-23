@@ -1063,6 +1063,69 @@ _ATTN_SLOT_TILE = 128
 #: rather than imported because `sparse_attn` runs inside a dynamo trace and the
 _ATTN_BIAS_PAD = 16
 
+#: Padded slot-table rows up to which `sparse_attn` takes the **dense** kernel —
+#: `kernels/sparse_attn.dense_attn`, which stages the whole table into SBUF once
+#: a call and batches `128 // heads` tokens into every score tile — instead of
+#: `gathered_attn_idx`, which re-gathers each token's own `topk` rows out of HBM
+#: and runs one token at a time at `heads = 8` of 128 partitions.
+#:
+#: **This bounds the TABLE, not the context length.** The table is the window
+#: slots plus the compressed-KV rows the indexer chose from — 640 to 2432 rows
+#: on the paths this serves — against a cache of up to 8448. Raising this so
+#: the dense arm covered an 8 k cache would be ~13x the necessary arithmetic
+#: while profiling beautifully; `.autohelix/notes/iter-6.md` §11b has the SBUF
+#: arithmetic that says it could not be staged anyway (12544 and 16768 rows
+#: want 401 and 537 KiB a partition against 192 KiB).
+#:
+#: The selection is identical either way (see `dense_attn`'s docstring): the
+#: dense pass reads the same `topk_idxs` as a mask, and an unselected slot
+#: contributes a hard zero. What changes is the work: the dense pass does
+#: `n_padded / topk` times the slot arithmetic, against 16x the tensor-engine
+#: and vector-engine width and ~14x fewer instructions.
+#:
+#: Measured table sizes: in512 prefill 1024 (ratio 2) / 1408 (ratio 1), in1024
+#: 1792 / 2432, in8192 12544 / 16768. So the 8 k cells and the batched-decode
+#: path — whose table is the concatenation of every sequence's own — keep the
+#: gathered kernel, which is why it stays.
+#:
+#: Measured standalone on device at 512 query rows, `heads = 8`,
+#: `head_dim = 512`, `topk = 512`, best of 12 — iteration 7's own run of the
+#: harness at `/mnt/nvme/tmp/iter7/time_attn.py`, reproducing iteration 6's:
+#:
+#:     npad   gathered us   dense us   speedup
+#:      640        4753.2     1000.0     4.75x
+#:     1024        4808.8      853.3     5.64x
+#:     1408        4810.9      994.7     4.84x
+#:     1792        4678.3      965.8     4.84x
+#:     2432        4818.7     1146.8     4.20x
+#:
+#: 4096 compiles and wins too (2.59x, iteration 3); 3072 is the cap because a
+#: kernel holding ~32 bytes a padded slot a partition is ~98 KiB of the 192 KiB
+#: at that width and it has to share SBUF with whatever else the enclosing
+#: graph has resident, which a standalone measurement does not prove.
+_ATTN_DENSE_MAX = int(os.environ.get("DEEPSEEK_V41_ATTN_DENSE_MAX", 3072) or 0)
+
+#: Query rows below which `sparse_attn` keeps the gathered kernel even when the
+#: table would fit. `dense_attn` pays for the whole table once a call — the
+#: transposes that put `head_dim` on partitions — and amortizes it over
+#: `tokens / (128 // heads)` score tiles, so at a handful of rows there is
+#: nothing to amortize it over. Measured, same harness:
+#:
+#:     rows   npad   gathered us   dense us   speedup
+#:        6    640         211.3      319.9     0.66x   (dense LOSES)
+#:        6   1024         265.0      426.0     0.62x   (dense LOSES)
+#:       32   1408         537.7      252.1     2.13x
+#:      512   1408        4810.9      994.7     4.84x
+#:
+#: A decode step gives `1 + dspark_block_size = 6` rows a sequence, so this
+#: keeps **every decode forward on the kernel it already ran**: iteration 6's
+#: capture puts `sparse_attn` at 2.6% of decode engine time against 41.3% at
+#: prefill, so there was never much there to win, and TPOT and decode
+#: throughput are gated.
+_ATTN_DENSE_MIN_ROWS = int(
+    os.environ.get("DEEPSEEK_V41_ATTN_DENSE_MIN_ROWS", 32) or 0
+)
+
 #: Bucket for the compressed-KV and index-key reads. `compress_len` grows with
 #: the decode position and is a tensor *shape*, so reading exactly that many
 #: groups makes every layer recompile once per token. Rounding the read up to a
@@ -1369,12 +1432,56 @@ def window_topk_idxs(
     return idxs.int().unsqueeze(0)
 
 
+def _dense_bias(
+    topk_idxs: torch.Tensor,
+    rows: int,
+    n: int,
+    npad: int,
+    softmax_scale: float,
+    zero: torch.Tensor,
+    neg: torch.Tensor,
+) -> torch.Tensor:
+    """`dense_attn`'s bias: the same selection `topk_idxs` holds, as a mask.
+
+    Every selected slot — and only a selected slot — comes out 0; everything
+    else, including the empties' dump column and the padding past `n`, comes
+    out `-1e30`, which `dense_attn` adds to the logit exactly as
+    `gathered_attn_idx` does for its own padding. **Nothing `topk_idxs` left
+    out can reach the output.**
+
+    `scatter_` lowers to one indirect-DMA descriptor per ~119 elements on
+    GpSimd — iteration 3 measured the per-layer version at 83 ms of prefill
+    engine time over 41 builds — which is why `sparse_attn` takes a
+    `bias_state` and builds this once an index epoch (9 builds a forward at
+    in512) rather than once a layer. Iteration 6's capture put the cached form
+    at 18.9 ms a forward, the same ~2.1 ms a build over a fifth of the builds.
+
+    `Tensor.scatter_` *raises* on an out-of-range index where the gathered
+    path's `clamp_min(0)` would silently gather a wrong row, so anything
+    outside `[0, n)` goes to the dump column rather than trusting the bound.
+    The bound does hold for every producer here; a hard failure across 64 ranks
+    costs an iteration and the guard costs one comparison.
+    """
+    empty = (topk_idxs == EMPTY_SLOT) | (topk_idxs < 0) | (topk_idxs >= n)
+    dump = torch.full_like(topk_idxs, npad - 1)
+    chosen = torch.zeros(
+        (1, rows, npad), dtype=torch.bool, device=topk_idxs.device
+    ).scatter_(2, torch.where(empty, dump, topk_idxs).to(torch.int64), ~empty)
+    mask = torch.where(
+        chosen & (torch.arange(npad, device=topk_idxs.device) < n), zero, neg
+    )
+    return torch.cat(
+        [mask.new_full((1, rows, _ATTN_BIAS_PAD), softmax_scale), mask], dim=2
+    )
+
+
 def sparse_attn(
     q: torch.Tensor,
     kv: torch.Tensor,
     attn_sink: torch.Tensor,
     topk_idxs: torch.Tensor,
     softmax_scale: float,
+    bias_state: "SharedAttentionState | None" = None,
 ) -> torch.Tensor:
     """Multi-head attention over gathered slots, with a learned sink.
 
@@ -1385,6 +1492,16 @@ def sparse_attn(
         the reference kernel's bf16 staging buffer, while the denominator sums
         the fp32 ones;
       - the sink joins the denominator against the final row max.
+
+    Two kernels compute exactly that, over exactly the slots `topk_idxs`
+    selects, and the table size picks between them — see `_ATTN_DENSE_MAX`:
+    `dense_attn` stages the table once and batches `128 // h` tokens a score
+    tile, `gathered_attn_idx` re-gathers each token's own rows and runs one
+    at a time. Simulated against each other on the same selections they agree
+    to ~5e-05 relative, and both are ~2.2e-03 from an exact fp64 masked
+    softmax — i.e. the difference between the two kernels is ~40x smaller than
+    the bf16 rounding they share. **The test is on shapes, so it resolves at
+    trace time and a compiled graph holds one arm, never a branch.**
     """
     b, s, h, d = q.shape
     n = kv.size(1)
@@ -1401,11 +1518,62 @@ def sparse_attn(
         "and every producer in this model (`Attention._window_kv`, "
         "`DSparkAttention.forward`) reshapes to a leading 1"
     )
+
+    # `n + 1` so the padded width always has at least one column past the
+    # table: that column is where an `EMPTY_SLOT` entry is sent, and it stays
+    # masked because the mask is `and`ed with `column < n`. Without it an empty
+    # slot would have to be clamped to 0 like the gathered path does, and would
+    # unmask a real row.
+    npad = -(-(n + 1) // _ATTN_SLOT_TILE) * _ATTN_SLOT_TILE
+    dense_fits = (
+        npad <= _ATTN_DENSE_MAX
+        and _ATTN_SLOT_TILE % h == 0
+        and d % _ATTN_SLOT_TILE == 0
+    )
+
+    # The whole sequence's mask, built once and sliced per query tile, because
+    # a tile's rows are a contiguous row range of it. `bias_state` carries it
+    # across the layers of one index epoch — see `_dense_bias` for what that
+    # is worth and `SharedAttentionState.attn_bias` for why it cannot go
+    # stale. The key is every static thing the mask depends on; `topk_idxs`
+    # itself is covered by the invalidation rather than by the key.
+    #
+    # Built **inside this gate**, which is the one thing iteration 6 changed
+    # from iteration 3 and the reason an 8 k forward never traces the builder
+    # at all: at 8192 tokens iteration 3's index-source-layer version
+    # materialized a `[8192, 16768]` bool and a `[8192, 16784]` fp32, ~550 MB a
+    # layer, for a kernel that is gated off at that table size.
+    dense = None
+    if dense_fits and s >= _ATTN_DENSE_MIN_ROWS:
+        key = (s, n, npad, topk, softmax_scale)
+        if bias_state is not None and bias_state.attn_bias_key == key:
+            dense = bias_state.attn_bias
+        if dense is None:
+            dense = _dense_bias(
+                topk_idxs, s, n, npad, softmax_scale,
+                _bound(sink, 0.0), _bound(sink, _NEG_BOUND),
+            )
+            if bias_state is not None:
+                bias_state.attn_bias = dense
+                bias_state.attn_bias_key = key
+
     for lo in range(0, s, _ATTN_QUERY_TILE):
         hi = min(lo + _ATTN_QUERY_TILE, s)
         t = hi - lo
         idxs = topk_idxs[:, lo:hi]
         empty = idxs == EMPTY_SLOT
+
+        if dense is not None and t >= _ATTN_DENSE_MIN_ROWS:
+            bias = dense[:, lo:hi]
+            tiles.append(
+                _nki_entry("sparse_attn", "dense_attn")(
+                    q[:, lo:hi].reshape(-1, d),
+                    kv.reshape(n, d),
+                    bias.reshape(-1, _ATTN_BIAS_PAD + npad),
+                    sink,
+                ).reshape(b, t, h, d)
+            )
+            continue
 
         bias = empty.float() * _NEG_BOUND
         gidx = idxs.clamp_min(0).int()
@@ -1551,6 +1719,7 @@ class SharedAttentionState:
 
     __slots__ = (
         "compress_kv", "index_k", "topk_idxs", "candidates", "compress_read",
+        "attn_bias", "attn_bias_key",
     )
 
     def __init__(self) -> None:
@@ -1562,6 +1731,22 @@ class SharedAttentionState:
         #: for the layers behind it that would read exactly the same ones.
         #: See `Attention.reads_shared_compress`.
         self.compress_read: torch.Tensor | None = None
+        #: `sparse_attn`'s dense-path mask, and the shape key it was built for.
+        #: Handed down for exactly the same reason `topk_idxs` is: it is a
+        #: function of `topk_idxs` and of nothing else that varies between the
+        #: layers that share them, and building it is a `scatter_` of
+        #: `s x topk` booleans — one indirect-DMA descriptor per ~119 elements
+        #: on GpSimd, ~2.1 ms a build.
+        #:
+        #: Invalidated in `Attention._compress_kv` at the one place
+        #: `topk_idxs` is written, so a layer can never read a mask built from
+        #: a different index map. And a `SharedAttentionState` is **fresh every
+        #: forward** (`DeepseekV41ForCausalLM.forward` makes one per span), so
+        #: nothing survives into the next one — which is what makes the
+        #: `compress_ratio = 0` layers, which build a mask and never invalidate
+        #: one, safe too. See `sparse_attn`'s `bias_state`.
+        self.attn_bias: torch.Tensor | None = None
+        self.attn_bias_key: tuple | None = None
 
 
 class Compressor(nn.Module):
@@ -1967,6 +2152,19 @@ class Attention(nn.Module):
                     paged, tp_group,
                 )
             shared.topk_idxs = idxs
+            # `sparse_attn`'s dense mask is a function of these indices, so it
+            # dies here, at the one place they change, and nowhere else. Every
+            # layer that reads `shared.topk_idxs` instead of computing its own
+            # is a layer whose mask is byte-identical to this one's: the window
+            # half of the index map is `window_topk_idxs(sliding_window,
+            # seqlen, start_pos)` with a `sliding_window` that is global, the
+            # compressed half *is* this tensor, the offset between them is the
+            # window table's own width, `softmax_scale` is `head_dim**-0.5` on
+            # every layer, and an index epoch never crosses a `compress_ratio`
+            # boundary (sources 2, 8, 14 are ratio 2; 20, 24, 28, 32, 36 are
+            # ratio 1), so `n` does not change under it either.
+            shared.attn_bias = None
+            shared.attn_bias_key = None
         else:
             idxs = shared.topk_idxs.to(torch.int32)
 
@@ -2167,7 +2365,9 @@ class Attention(nn.Module):
                 topk_idxs = torch.cat([topk_idxs, compress_idxs], dim=-1)
             attended.append(
                 sparse_attn(
-                    q[:, rows], kv, self.attn_sink, topk_idxs, self.softmax_scale
+                    q[:, rows], kv, self.attn_sink, topk_idxs,
+                    self.softmax_scale,
+                    span_shared if self.compress_ratio else None,
                 )
             )
         o = attended[0] if len(attended) == 1 else torch.cat(attended, dim=1)
@@ -2303,6 +2503,54 @@ class Attention(nn.Module):
             idxs.append(
                 torch.cat([window_idxs[b : b + 1], compress_idxs], dim=-1)
             )
+        # One table or one a span, and the choice is `sparse_attn`'s kernel
+        # choice rather than a preference. Concatenating is what lets one
+        # launch serve every span (the paragraphs above), but the table it
+        # concatenates is `bsz` times as wide as any one token can see, and
+        # `sparse_attn`'s dense kernel is bounded by what it can stage in SBUF
+        # (`_ATTN_DENSE_MAX`). At `bsz = 10` the concatenation is ~14000 rows
+        # and falls back to the per-token gather; a span's own is ~1400 and
+        # does not.
+        #
+        # Splitting costs nothing here, which is the only reason it is worth
+        # doing: `sparse_attn` already tiles its query rows at
+        # `_ATTN_QUERY_TILE = 512` and a prefill span is 512 rows, so ten spans
+        # of 512 are ten kernel launches either way — the same ten, over a
+        # tenth of the table each. And it is the same arithmetic for the same
+        # reason the concatenation was: a token's output depends on its own
+        # query row, its own slots and its own bias, so `bsz` calls over `bsz`
+        # tables are bit-identical to one call over their concatenation. The
+        # unshifted per-span `idxs` are what the loop above already built.
+        #
+        # The decision is taken from two Python ints, so the arm that is not
+        # taken costs nothing and the concatenated path traces identically to
+        # the tree before this change. `length >= _ATTN_DENSE_MIN_ROWS` keeps
+        # decode on the single concatenated call.
+        rows_one = sum(p.shape[1] for p in parts[: len(parts) // bsz])
+        if (
+            bsz > 1
+            and length >= _ATTN_DENSE_MIN_ROWS
+            and -(-(rows_one + 1) // _ATTN_SLOT_TILE) * _ATTN_SLOT_TILE
+            <= _ATTN_DENSE_MAX
+        ):
+            per = len(parts) // bsz
+            attended = []
+            for b in range(bsz):
+                span_parts = parts[b * per : (b + 1) * per]
+                attended.append(
+                    sparse_attn(
+                        q[:, b * length : (b + 1) * length],
+                        span_parts[0]
+                        if per == 1
+                        else torch.cat(span_parts, dim=1),
+                        self.attn_sink,
+                        idxs[b],
+                        self.softmax_scale,
+                        shared[b] if self.compress_ratio else None,
+                    )
+                )
+            return torch.cat(attended, dim=1)
+
         kv = torch.cat(parts, dim=1)
         rows_per = kv.shape[1] // bsz
         idx = torch.cat(idxs, dim=0)
@@ -2353,7 +2601,17 @@ class Attention(nn.Module):
             kv = torch.cat([kv, compress_kv], dim=1)
             topk_idxs = torch.cat([topk_idxs, compress_idxs], dim=-1)
 
-        o = sparse_attn(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
+        # `shared` only on a `compress_ratio` layer, which is what makes the
+        # mask cache provably fresh: such a layer always reaches
+        # `_compress_kv`, the first one in any forward (layer 2) is an index
+        # source, and an index source invalidates. A `compress_ratio = 0` layer
+        # never calls `_compress_kv`, so nothing in its forward would clear a
+        # mask left over from an earlier one — it builds its own instead, which
+        # is cheap (its index map is the 128-wide window alone).
+        o = sparse_attn(
+            q, kv, self.attn_sink, topk_idxs, self.softmax_scale,
+            shared if self.compress_ratio else None,
+        )
         o = torch.cat(
             [o[..., :-rd], apply_rotary_emb(o[..., -rd:], freqs_cis, True)], -1
         )
