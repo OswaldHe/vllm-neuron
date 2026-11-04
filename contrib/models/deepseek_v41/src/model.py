@@ -1520,13 +1520,29 @@ def host_heap_trim(tag: str, world_size: int) -> None:
     )
 
 
+#: `DEEPSEEK_V41_READ_BUCKETS=n` (default 1): read the smallest of `n` context buckets --
+#: the ceiling, half of it, a quarter, ... -- that holds the live groups, instead of
+#: always the ceiling. Each bucket is its own set of per-layer graphs, compiled and
+#: resident once a request reaches it, so a short context on a long-context engine
+#: scores and selects over its own bucket, and a long prompt's early prefill segments
+#: over smaller ones. 1 keeps the single set at the ceiling.
+_READ_BUCKETS = max(1, int(os.environ.get("DEEPSEEK_V41_READ_BUCKETS", "1")))
+
+
 def _compress_read_len(compress_len: int, ratio: int = 1) -> int:
     """How many compressed groups to read for `compress_len` live ones."""
     if compress_len <= 0:
         return 0
     want = compress_len
     if _COMPRESS_READ_CEILING:
-        want = max(want, -(-_COMPRESS_READ_CEILING // max(ratio, 1)))
+        top = -(-_COMPRESS_READ_CEILING // max(ratio, 1))
+        bucket = top
+        for k in range(1, _READ_BUCKETS):
+            smaller = -(-top // (1 << k))
+            if smaller < want:
+                break
+            bucket = smaller
+        want = max(want, bucket)
     return -(-want // _COMPRESS_TILE) * _COMPRESS_TILE
 
 #: The finite lower bound the reference kernel starts its running max at. A row

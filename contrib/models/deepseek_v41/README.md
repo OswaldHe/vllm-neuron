@@ -404,6 +404,17 @@ Measured on SDK 2.33, warm, bs1, DSpark on (HBM at 256K: 20-21 of 24 GiB):
 
 The index layers read up to `--max-model-len` whatever the live context
 (`_COMPRESS_READ_CEILING`), so a larger ceiling costs every request.
+`DEEPSEEK_V41_READ_BUCKETS=n` (default 1) reads the smallest of `n` buckets instead -- the
+ceiling, half of it, a quarter, ... -- that holds the live context, each bucket its own set
+of graphs (compiled, loaded and run for the first time when a request first reaches it).
+256K server, 4 buckets (256K/128K/64K/32K), warm (HBM 21 of 24 GiB):
+
+| prompt tokens | 1 bucket: TTFT / TPOT | 4 buckets: TTFT / TPOT |
+| --- | ---: | ---: |
+| 3,962 | 5.0 s / 75 ms | 2.6 s / 31 ms |
+| 31,214 | | 19.7 s / 30 ms |
+| 114,904 | 142 s / 71 ms | 87.6 s / 43 ms |
+| 229,724 | 278 s / 79 ms | 217 s / 63 ms |
 
 A needle (a code at 10%, 50% and 90% of a 30K and a 100K prompt) is recalled in 6 of 6
 cases on the 128K server, with the same reasoning text as the per-op path

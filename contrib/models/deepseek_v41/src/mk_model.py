@@ -779,10 +779,9 @@ class StepIndices:
     def read_len(self, ratio: int) -> int:
         if not ratio:
             return 0
-        lens = {int(p.read_lens[ratio]) for p in self.paged}
-        if len(lens) != 1:
-            raise NotImplementedError(f"spans with different compressed read lengths {sorted(lens)}")
-        return lens.pop()
+        # spans in different read buckets (`model._READ_BUCKETS`) read the largest: the
+        # tables clamp each span's reads to its own live groups
+        return max(int(p.read_lens[ratio]) for p in self.paged)
 
     def for_ratio(self, ratio: int, window: int) -> mk_host.AttnIndices:
         key = (ratio, window)
