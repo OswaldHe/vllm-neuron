@@ -365,6 +365,46 @@ a lower bound on real traffic; the prose probe measured 47% (SDK 2.32) and 46%
 requests at concurrency 4 put the p50 between two waves; its throughput and
 mean TPOT are the stable figures.
 
+### Long contexts (up to 128K)
+
+The megakernels serve contexts past 16K, up to `--max-model-len 131072` on a
+`trn2.48xlarge`. Two settings are needed at that length:
+
+```bash
+DEEPSEEK_V41_WINDOW_POOL=1 \
+DEEPSEEK_V41_PREFILL_SEGMENT_TOKENS=1024 \
+python -m performance._serve_main ... \
+    --max-model-len 131072 --max-num-seqs 1 \
+    --num-gpu-blocks-override 4097   # max_model_len / block_size (32) + 1
+```
+
+- `DEEPSEEK_V41_WINDOW_POOL=1` keeps the window layers' KV in a small shared block pool
+  instead of vLLM's full-context allocation, which does not fit in HBM at 128K. Only
+  `layers.0` stays in vLLM's KV spec, as a 16-wide slot authority, so vLLM sizes its
+  block count from almost no bytes per block: `--num-gpu-blocks-override` must cap it.
+  The pool is off by default.
+- Past 16384 compressed groups (16K tokens at the ratio-1 layers) the kernels apply the
+  candidate-block mask (`model.select_candidate_blocks`): layer 20 keeps the best 2048
+  blocks of 8 groups, and layers 24-36 select under it.
+- Past 8192 keys the index path works on column chunks: the key table is transposed once
+  a step into HBM, scores are batched `128 / index heads` tokens a matmul, and the top-k
+  is preselected by blocks of 16 keys. Below that, every helper runs the code it did.
+
+Measured on SDK 2.33, 128K server, warm, bs1, DSpark on:
+
+| prompt tokens | TTFT | TPOT |
+| --- | ---: | ---: |
+| 3,962 | 3.6 s | 48-50 ms |
+| 31,214 | 28-30 s | 49-52 ms |
+| 114,904 | 100-102 s | 47-50 ms |
+
+A needle (a code at 10%, 50% and 90% of a 30K and a 100K prompt) is recalled in 6 of 6
+cases, with the same reasoning text as the per-op path (`DEEPSEEK_V41_MEGAKERNEL=0`).
+
+`test/unit/test_index_long.py`, `test/unit/test_slot_table.py` and
+`test/unit/bench_index.py` cover the long-context index path, the decode slot table and
+the index path's time per 1024-row segment.
+
 ### Optional: unit and module tests
 
 `test/unit/` checks the megakernels against a CPU reference on a few cores,

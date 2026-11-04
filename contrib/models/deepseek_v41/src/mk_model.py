@@ -417,6 +417,14 @@ def step_tensor(name, values, dtype, device) -> torch.Tensor:
 _ZEROS: dict = {}
 
 
+def _zeros_f32(shape, device) -> torch.Tensor:
+    key = (tuple(shape), str(device), "f32")
+    z = _ZEROS.get(key)
+    if z is None:
+        z = _ZEROS[key] = torch.zeros(shape, dtype=torch.float32, device=device)
+    return z
+
+
 def _zeros_i32(shape, device) -> torch.Tensor:
     key = (tuple(shape), str(device))
     z = _ZEROS.get(key)
@@ -426,8 +434,8 @@ def _zeros_i32(shape, device) -> torch.Tensor:
 
 
 #: the arguments a decode step builds itself (their shapes pick the NEFF a launch runs)
-_STEP_ARGS = ("stream", "pre_mix", "row_pos", "write_slots", "win_slots", "twin", "wv", "cmp_slots",
-              "cbase", "topk_in", "grp_pos", "grp_mslots", "grp_wslots", "clen", "hash_ids", "live")
+_STEP_ARGS = ("stream", "pre_mix", "row_pos", "write_slots", "wwin_slots", "win_slots", "twin", "wv", "cmp_slots",
+              "cbase", "topk_in", "grp_pos", "grp_mslots", "grp_wslots", "clen", "cand", "hash_ids", "live")
 
 
 def _host(t: torch.Tensor) -> torch.Tensor:
@@ -746,6 +754,8 @@ class StepIndices:
     _by_ratio: dict = field(default_factory=dict)
     _hash_cols: dict = field(default_factory=dict)
     topk: torch.Tensor | None = None
+    #: the candidate-block mask, `[T * blocks, 1]` fp32 (`kernels.mk_compress.index_candidates`)
+    cand: torch.Tensor | None = None
     compress_cache: torch.Tensor | None = None
     index_cache: torch.Tensor | None = None
     taps: list = field(default_factory=list)
@@ -782,7 +792,18 @@ class StepIndices:
                 self.spans, self.tables, self.slot_mapping, self.block_size, window,
                 self.read_len(ratio), ratio, self.T,
             )
-            for name in ("row_pos", "write_slots", "win_slots", "cmp_slots", "twin", "wv", "cbase",
+            if self.paged[0].win_table_host is not None:
+                # Window pool (model.WindowPool): the window cache is the pool, addressed by its own tables.
+                win = mk_host.build_attn_indices(
+                    self.spans, [p.win_table_host for p in self.paged],
+                    torch.tensor([s for p in self.paged for s in p.win_slots_host], dtype=torch.int64),
+                    self.block_size, window, 0, 0, self.T,
+                )
+                # only the window cache: the compressor's pooling caches stay on vLLM's slots
+                idx.win_slots, idx.wwin_slots = win.win_slots, win.write_slots
+            if idx.wwin_slots is None:
+                idx.wwin_slots = idx.write_slots
+            for name in ("row_pos", "write_slots", "wwin_slots", "win_slots", "cmp_slots", "twin", "wv", "cbase",
                          "clen", "grp_pos", "grp_mslots", "grp_wslots"):
                 t = getattr(idx, name)
                 if t is not None:
@@ -872,6 +893,7 @@ def run_layer(model, block, stream: torch.Tensor, pre_mix: torch.Tensor, step: S
     n = dict(lw.named)
     n.update(
         stream=stream, pre_mix=pre_mix, row_pos=idx.row_pos, write_slots=idx.write_slots,
+        wwin_slots=idx.wwin_slots,
         win_slots=idx.win_slots, twin=idx.twin, wv=idx.wv,
         window_kv_cache=attn.window_kv_cache.view(-1, hd), live=step.live,
         groups_attn=model._mk_groups_attn, groups_world=model._mk_groups_world,
@@ -886,38 +908,30 @@ def run_layer(model, block, stream: torch.Tensor, pre_mix: torch.Tensor, step: S
     if lw.ratio:
         if step.compress_cache is None or step.index_cache is None:
             raise RuntimeError(f"layer {attn.layer_id} reads compressed KV before any kv-source layer ran")
-        if attn.is_index_source and attn.indexer.uses_candidates:
-            # The candidate-block mask keeps the best `candidate_topk_blocks` blocks of
-            # `candidate_block_size` groups; it only removes groups when the context
-            # holds more than that, which the kernel does not model.
-            #
-            # TODO(candidate mask): implement it in the kernels to serve contexts past
-            # `candidate_topk_blocks * candidate_block_size` compressed groups (16384,
-            # i.e. ~16k tokens at the ratio-1 layers). This is a correctness feature,
-            # not a performance one: past the limit it changes which compressed
-            # positions layers 24-36 (and the consumers behind them) attend to. What
-            # the per-op path does (`model.select_candidate_blocks`, `Indexer.forward`):
-            #   1. in the `c1_source` kernel (layer 20), after the reduced, clen-masked
-            #      index scores: the max over each block of `candidate_block_size`
-            #      groups, the block holding `(clen - 1) // candidate_block_size`
-            #      forced in, a top-`candidate_topk_blocks` over blocks, and a keep mask
-            #      of the blocks whose value beats NEG_BOUND, returned to the bridge and
-            #      handed down the stack like `step.topk`;
-            #   2. in the `c1_index` kernels, the scores outside a kept block set to
-            #      NEG_BOUND before `index_topk_rows`.
-            # Until then the guard below raises rather than compute a different top-k.
-            limit = int(model.config.candidate_topk_blocks) * int(model.config.candidate_block_size)
-            if step.read_len(lw.ratio) > limit:
-                raise NotImplementedError(
-                    f"the context reads {step.read_len(lw.ratio)} compressed groups, more than the "
-                    f"{limit} the candidate-block mask keeps; the kernels assume the mask is a no-op"
-                )
         if step.topk is None:
             step.topk = _zeros_i32((T, int(model.config.index_topk)), step.device)
         n.update(cmp_slots=idx.cmp_slots, cbase=idx.cbase, topk_in=step.topk,
                  compress_kv_cache=step.compress_cache)
     if lw.idx_src:
         n.update(index_k_cache=step.index_cache, clen=idx.clen)
+        # The candidate-block mask (`model.select_candidate_blocks`): the best
+        # `candidate_topk_blocks` blocks of `candidate_block_size` compressed groups, chosen
+        # by the candidate source layer and applied by the index layers after it. Within
+        # that many groups it keeps every live block, so it is only built past them.
+        ix = attn.indexer
+        cand_on = (ix.is_candidate_source or ix.uses_candidates) and step.read_len(lw.ratio) > (
+            int(model.config.candidate_topk_blocks) * int(model.config.candidate_block_size))
+        if cand_on:
+            from .kernels import mk_compress
+            if (int(model.config.candidate_topk_blocks), int(model.config.candidate_block_size)) != (
+                    mk_compress.CAND_TOPK, mk_compress.CAND_BLOCK):
+                raise NotImplementedError("the kernels' candidate mask is built for 2048 blocks of 8 groups")
+            if ix.is_candidate_source:
+                nb = step.read_len(lw.ratio) // mk_compress.CAND_BLOCK
+                step.cand = torch.empty((T * nb, 1), dtype=torch.float32, device=step.device)
+            elif step.cand is None:
+                raise RuntimeError(f"layer {attn.layer_id} selects under the candidate mask before its source ran")
+        n["cand"] = step.cand if cand_on else _zeros_f32((1, 1), step.device)
     if lw.engram:
         index = list(model.config.engram_layer_ids).index(attn.layer_id)
         n["hash_ids"] = step.hash_cols(index, block.engram.row_start)
@@ -955,6 +969,9 @@ def run_layer(model, block, stream: torch.Tensor, pre_mix: torch.Tensor, step: S
     if lw.idx_src:
         step.topk = out[k]
         k += 1
+        if "cand" in params(kernel) and n["cand"].shape[0] > 1 and attn.indexer.is_candidate_source:
+            step.cand = out[k]
+            k += 1
     if lw.tap:
         step.taps.append(out[k])
     _throttle(model, ffn_pre)
@@ -1031,9 +1048,10 @@ def run_draft_batched(model, seeds, taps, main_hidden, spans, paged):
         consts[ck] = (rows_c.to(device), torch.tensor([[float(B * K)]], dtype=torch.float32).to(device))
     rows_c, live = consts[ck]
     row_pos = torch.cat([sp + torch.arange(length) for _, length, sp in spans]).to(torch.int32).reshape(-1, 1)
-    write_slots = torch.cat([torch.as_tensor(p.host_slots[:length], dtype=torch.int32)
+    pooled = paged[0].win_table_host is not None  # window pool (model.WindowPool): its slots and tables
+    write_slots = torch.cat([torch.as_tensor((p.win_slots_host if pooled else p.host_slots)[:length], dtype=torch.int32)
                              for p, (_, length, _) in zip(paged, spans)]).reshape(-1, 1)
-    tables = [p.host_table.to(torch.int32).reshape(-1) for p in paged]
+    tables = [(p.win_table_host if pooled else p.host_table).to(torch.int32).reshape(-1) for p in paged]
     nblk = max(int(t.numel()) for t in tables)
     table = torch.stack([torch.nn.functional.pad(t, (0, nblk - int(t.numel()))) for t in tables]).reshape(-1, 1)
     n = dict(draft_weights(model))
@@ -1263,6 +1281,8 @@ def run_draft(model, seed_ids, tap, main_hidden, span, paged):
     cfg = model.config
     device = main_hidden.device
     host_table, host_slots = paged.host_table, paged.host_slots
+    if paged.win_table_host is not None:  # window pool (model.WindowPool): its slots and table
+        host_table, host_slots = paged.win_table_host, paged.win_slots_host
     begin, length, start_pos = span
     main = main_hidden[begin : begin + length]
     meta = M._compiled(_draft_meta)(seed_ids, tap, paged.pos)
