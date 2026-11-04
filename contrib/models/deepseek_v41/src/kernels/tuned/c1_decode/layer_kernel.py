@@ -116,13 +116,14 @@ TOPK_EXPERTS = 6
 #: Tokens a prefill chunk scores and selects at once: the index-score scratch is
 #: three `[IDX_CHUNK, read_len]` buffers, 35 MiB at an 8448-token context.
 IDX_CHUNK = 512
+IDX_CHUNK_MIN = PT
 
 
 def idx_chunk(read_len):
     """Prefill rows scored a pass: `IDX_CHUNK` up to 16384 keys, then fewer, down to one row
     tile, so the three `[chunk, read_len]` score buffers each index kernel holds in HBM stay
-    near their 16384-key size (32 MiB fp32) at long contexts."""
-    return max(PT, min(IDX_CHUNK, IDX_CHUNK * 16384 // max(read_len, 1) // PT * PT))
+    near their 16384-key size (32 MiB fp32) at long contexts (down to `IDX_CHUNK_MIN` rows)."""
+    return max(IDX_CHUNK_MIN, min(IDX_CHUNK, IDX_CHUNK * 16384 // max(read_len, 1) // IDX_CHUNK_MIN * IDX_CHUNK_MIN))
 #: Decode attention tokens one loop iteration carries.
 ATTN_UNROLL = 12
 #: Decode, one tile, at least this many rows: the shared expert's w2 unsplit on every rank
@@ -328,7 +329,10 @@ def _layer(a, arch, phase):
     q = nl.ndarray((Tp, heads * hd), dtype=nl.bfloat16, buffer=nl.shared_hbm, name="q")
     kvr = nl.ndarray((Tp, hd), dtype=nl.bfloat16, buffer=nl.shared_hbm, name="kvr")
     kv = nl.ndarray((Tp, hd), dtype=nl.bfloat16, buffer=nl.shared_hbm, name="kv")
-    kvtab = nl.ndarray((ntab_p, hd), dtype=nl.bfloat16, buffer=nl.shared_hbm, name="kvtab")
+    # decode, direct: no materialized KV table -- the index table holds cache slots
+    # (`attn_slot_table`) and the attention gathers from the caches directly
+    direct = decode and arch in ("c1", "c1_tap", "c1_index", "c2_source") and win % PT == 0
+    kvtab = nl.ndarray((PT, hd) if direct else (ntab_p, hd), dtype=nl.bfloat16, buffer=nl.shared_hbm, name="kvtab")
     idx = nl.ndarray((Tp, kpad), dtype=nl.int32, buffer=nl.shared_hbm, name="idx")
     o = nl.ndarray((Tp, heads * hd), dtype=nl.bfloat16, buffer=nl.shared_hbm, name="o")
     oq = nl.ndarray((Tp, heads * hd), dtype=nl.bfloat16, buffer=nl.shared_hbm, name="oq")
@@ -475,8 +479,8 @@ def _layer(a, arch, phase):
             # (the reference's `Compressor` above ratio 1).
             fp32_proj_rows(xn, a["cm_wkv_t"], pkv, mine, dim, hd)
             fp32_proj_rows(xn, a["cm_wgate_t"], psc, mine, dim, hd)
-            scatter_rows_f32(pkv, a["write_slots"], pool_kv, mine, hd)
-            scatter_rows_f32(psc, a["write_slots"], pool_score, mine, hd)
+            scatter_rows_f32(pkv, a["wwin_slots"], pool_kv, mine, hd)
+            scatter_rows_f32(psc, a["wwin_slots"], pool_score, mine, hd)
             nisa.core_barrier(data=pool_kv, cores=(0, 1))
             nisa.core_barrier(data=pool_score, cores=(0, 1))
             pool_groups(pool_kv, pool_score, a["grp_mslots"], gtiles, ratio, hd, lat_raw)
@@ -535,9 +539,6 @@ def _layer(a, arch, phase):
     # Span b's rows of the slot table: its window rows, then its compressed rows.
     if idx_src:
         ktab = nl.ndarray((nspans * read_len, kd), dtype=nl.bfloat16, buffer=nl.shared_hbm, name="ktab")
-    # decode c1: no materialized KV table -- the index table holds cache slots
-    # (`attn_slot_table`) and the attention gathers from the caches directly.
-    direct = decode and arch in ("c1", "c1_tap") and win % PT == 0
     for b in range(nspans):
         if not direct:
             gather_rows(window_kv_cache, a["win_slots"][b * nwin : (b + 1) * nwin],

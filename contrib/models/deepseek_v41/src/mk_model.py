@@ -799,8 +799,16 @@ class StepIndices:
                     torch.tensor([s for p in self.paged for s in p.win_slots_host], dtype=torch.int64),
                     self.block_size, window, 0, 0, self.T,
                 )
-                # only the window cache: the compressor's pooling caches stay on vLLM's slots
+                # the window cache and, on the megakernel path, the compressor's pooling
+                # inputs (`Compressor.allocate_state`) live in the pool; the compressed and
+                # index caches stay on vLLM's slots
                 idx.win_slots, idx.wwin_slots = win.win_slots, win.write_slots
+                if ratio > 1 and idx.grp_mslots is not None:
+                    idx.grp_mslots = mk_host.build_attn_indices(
+                        self.spans, [p.win_table_host for p in self.paged],
+                        torch.tensor([s for p in self.paged for s in p.win_slots_host], dtype=torch.int64),
+                        self.block_size, window, 1, ratio, self.T,
+                    ).grp_mslots
             if idx.wwin_slots is None:
                 idx.wwin_slots = idx.write_slots
             for name in ("row_pos", "write_slots", "wwin_slots", "win_slots", "cmp_slots", "twin", "wv", "cbase",

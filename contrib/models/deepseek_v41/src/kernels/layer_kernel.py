@@ -111,13 +111,14 @@ TOPK_EXPERTS = 6
 #: Tokens a prefill chunk scores and selects at once: the index-score scratch is
 #: three `[IDX_CHUNK, read_len]` buffers, 35 MiB at an 8448-token context.
 IDX_CHUNK = 512
+IDX_CHUNK_MIN = PT
 
 
 def idx_chunk(read_len):
     """Prefill rows scored a pass: `IDX_CHUNK` up to 16384 keys, then fewer, down to one row
     tile, so the three `[chunk, read_len]` score buffers each index kernel holds in HBM stay
-    near their 16384-key size (32 MiB fp32) at long contexts."""
-    return max(PT, min(IDX_CHUNK, IDX_CHUNK * 16384 // max(read_len, 1) // PT * PT))
+    near their 16384-key size (32 MiB fp32) at long contexts (down to `IDX_CHUNK_MIN` rows)."""
+    return max(IDX_CHUNK_MIN, min(IDX_CHUNK, IDX_CHUNK * 16384 // max(read_len, 1) // IDX_CHUNK_MIN * IDX_CHUNK_MIN))
 
 #: `(compress_ratio, kv source, index source, engram, tap)` of each archetype.
 ARCH = {
@@ -377,8 +378,8 @@ def _layer(a, arch, phase):
             # (the reference's `Compressor` above ratio 1).
             fp32_proj_rows(xn, a["cm_wkv_t"], pkv, mine, dim, hd)
             fp32_proj_rows(xn, a["cm_wgate_t"], psc, mine, dim, hd)
-            scatter_rows_f32(pkv, a["write_slots"], pool_kv, mine, hd)
-            scatter_rows_f32(psc, a["write_slots"], pool_score, mine, hd)
+            scatter_rows_f32(pkv, a["wwin_slots"], pool_kv, mine, hd)
+            scatter_rows_f32(psc, a["wwin_slots"], pool_score, mine, hd)
             nisa.core_barrier(data=pool_kv, cores=(0, 1))
             nisa.core_barrier(data=pool_score, cores=(0, 1))
             pool_groups(pool_kv, pool_score, a["grp_mslots"], gtiles, ratio, hd, lat_raw)

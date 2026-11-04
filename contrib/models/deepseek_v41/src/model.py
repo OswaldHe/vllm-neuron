@@ -5377,7 +5377,10 @@ class DeepseekV41ForCausalLM(nn.Module):
                     device=device,
                 )
                 if attn.compressor is not None:
-                    attn.compressor.allocate_state(device, num_slots)
+                    # the megakernels pool from the window pool's slots (`mk_model.StepIndices`):
+                    # a group's members are within the window, so the pool holds them
+                    pool_slots = _WINDOW_POOL.num_blocks * window.shape[2] if WINDOW_POOL and _MEGAKERNEL else None
+                    attn.compressor.allocate_state(device, pool_slots or num_slots)
                 own_bytes += sum(
                     t.numel() * t.element_size()
                     for t in (attn.compress_kv_cache, attn.index_k_cache)
