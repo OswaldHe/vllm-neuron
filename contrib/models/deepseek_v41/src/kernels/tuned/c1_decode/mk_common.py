@@ -42,6 +42,8 @@ NEG_BOUND = -1.0e30
 KTILE = 128
 #: A psum bank: 512 fp32 per partition.
 PSUM_FP32 = 512
+#: `attn_slot_table` gathers a span's compressed slot table this many groups a pass past it.
+SLOT_COLS = 8192
 
 
 def cdiv(n, d):
@@ -723,15 +725,23 @@ def attn_slot_table(sid_hbm, nr, twin, wv, cbase, topk_hbm, win_slots, cmp_slots
     `perm_hbm` (optional) gets the same rows in `attn_gather_segs` order (see there).
     """
     L = nr // nspans
+    # Past SLOT_COLS compressed groups the span's slot table is not held whole (a 65536-group
+    # table is 256 KiB of int32 on a partition of 192 KiB): it is gathered SLOT_COLS a pass.
+    ccols = read_len if read_len <= SLOT_COLS else SLOT_COLS
     wsl = nl.ndarray((PT, nwin), dtype=nl.int32, buffer=nl.sbuf)
-    csl = nl.ndarray((PT, read_len), dtype=nl.int32, buffer=nl.sbuf)
     # one partition-broadcast DMA per span and table (not one per row)
     for b in range(nspans):
         r = b * L
         nisa.dma_copy(dst=wsl[r : r + L, 0:nwin],
                       src=win_slots.ap(pattern=[[0, L], [1, nwin]], offset=b * nwin))
-        nisa.dma_copy(dst=csl[r : r + L, 0:read_len],
-                      src=cmp_slots.ap(pattern=[[0, L], [1, read_len]], offset=b * read_len))
+
+    def slot_cols(c0, n):
+        csl = nl.ndarray((PT, n), dtype=nl.int32, buffer=nl.sbuf)
+        for b in range(nspans):
+            r = b * L
+            nisa.dma_copy(dst=csl[r : r + L, 0:n],
+                          src=cmp_slots.ap(pattern=[[0, L], [1, n]], offset=b * read_len + c0))
+        return csl
     row = nl.ndarray((PT, kpad), dtype=nl.float32, buffer=nl.sbuf)
     # window: local index twin - cbase + nwin + j, valid where j + wv >= 0
     j = nl.ndarray((PT, win), dtype=nl.int32, buffer=nl.sbuf)
@@ -769,15 +779,35 @@ def attn_slot_table(sid_hbm, nr, twin, wv, cbase, topk_hbm, win_slots, cmp_slots
         nisa.tensor_copy(dst=tk[0:nr, :], src=tki[0:nr, :])
         tv = nl.ndarray((PT, topk), dtype=nl.float32, buffer=nl.sbuf)
         nisa.tensor_scalar(dst=tv[0:nr, :], data=tk[0:nr, :], op0=nl.greater_equal, operand0=0.0)
-        tl = nl.ndarray((PT, topk), dtype=nl.float32, buffer=nl.sbuf)
-        nisa.tensor_scalar(dst=tl[0:nr, :], data=tk[0:nr, :], op0=nl.maximum, operand0=0.0,
-                           op1=nl.minimum, operand1=float(read_len - 1))
-        tli = nl.ndarray((PT, topk), dtype=nl.uint32, buffer=nl.sbuf)
-        nisa.tensor_copy(dst=tli[0:nr, :], src=tl[0:nr, :])
-        cs = nl.ndarray((PT, topk), dtype=nl.int32, buffer=nl.sbuf)
-        nisa.nc_n_gather(dst=cs[0:nr, :], data=csl[0:nr, :], indices=tli[0:nr, :])
         csf = nl.ndarray((PT, topk), dtype=nl.float32, buffer=nl.sbuf)
-        nisa.tensor_copy(dst=csf[0:nr, :], src=cs[0:nr, :])
+        for c0 in range(0, read_len, ccols):
+            n = min(ccols, read_len - c0)
+            csl = slot_cols(c0, n)
+            tl = nl.ndarray((PT, topk), dtype=nl.float32, buffer=nl.sbuf)
+            nisa.tensor_scalar(dst=tl[0:nr, :], data=tk[0:nr, :], op0=nl.add, operand0=-float(c0))
+            if n < read_len:
+                # this pass's picks: c0 <= topk < c0 + n
+                inr = nl.ndarray((PT, topk), dtype=nl.float32, buffer=nl.sbuf)
+                nisa.tensor_scalar(dst=inr[0:nr, :], data=tl[0:nr, :], op0=nl.greater_equal, operand0=0.0)
+                hi = nl.ndarray((PT, topk), dtype=nl.float32, buffer=nl.sbuf)
+                nisa.tensor_scalar(dst=hi[0:nr, :], data=tl[0:nr, :], op0=nl.less, operand0=float(n))
+                nisa.tensor_tensor(dst=inr[0:nr, :], data1=inr[0:nr, :], data2=hi[0:nr, :], op=nl.multiply)
+            nisa.tensor_scalar(dst=tl[0:nr, :], data=tl[0:nr, :], op0=nl.maximum, operand0=0.0,
+                               op1=nl.minimum, operand1=float(n - 1))
+            tli = nl.ndarray((PT, topk), dtype=nl.uint32, buffer=nl.sbuf)
+            nisa.tensor_copy(dst=tli[0:nr, :], src=tl[0:nr, :])
+            cs = nl.ndarray((PT, topk), dtype=nl.int32, buffer=nl.sbuf)
+            nisa.nc_n_gather(dst=cs[0:nr, :], data=csl[0:nr, :], indices=tli[0:nr, :])
+            if n == read_len:
+                nisa.tensor_copy(dst=csf[0:nr, :], src=cs[0:nr, :])
+            else:
+                part = nl.ndarray((PT, topk), dtype=nl.float32, buffer=nl.sbuf)
+                nisa.tensor_copy(dst=part[0:nr, :], src=cs[0:nr, :])
+                nisa.tensor_tensor(dst=part[0:nr, :], data1=part[0:nr, :], data2=inr[0:nr, :], op=nl.multiply)
+                if c0 == 0:
+                    nisa.tensor_copy(dst=csf[0:nr, :], src=part[0:nr, :])
+                else:
+                    nisa.tensor_tensor(dst=csf[0:nr, :], data1=csf[0:nr, :], data2=part[0:nr, :], op=nl.add)
         nisa.tensor_tensor(dst=csf[0:nr, :], data1=csf[0:nr, :], data2=tv[0:nr, :], op=nl.multiply)
         tm1 = nl.ndarray((PT, topk), dtype=nl.float32, buffer=nl.sbuf)
         nisa.tensor_scalar(dst=tm1[0:nr, :], data=tv[0:nr, :], op0=nl.add, operand0=-1.0)

@@ -94,10 +94,12 @@ from .mk_common import (
     tiles_of,
 )
 from .mk_compress import (
+    CAND_BLOCK,
     build_ktT,
     fp32_proj_rows,
     fp8_qdq_exact_tile,
     index_scores_tokens,
+    index_candidates,
     index_topk_rows,
     pool_groups,
     rope_fp4_put,
@@ -112,6 +114,14 @@ TOPK_EXPERTS = 6
 #: Tokens a prefill chunk scores and selects at once: the index-score scratch is
 #: three `[IDX_CHUNK, read_len]` buffers, 35 MiB at an 8448-token context.
 IDX_CHUNK = 512
+IDX_CHUNK_MIN = PT
+
+
+def idx_chunk(read_len):
+    """Prefill rows scored a pass: `IDX_CHUNK` up to 16384 keys, then fewer, down to one row
+    tile, so the three `[chunk, read_len]` score buffers each index kernel holds in HBM stay
+    near their 16384-key size (32 MiB fp32) at long contexts (down to `IDX_CHUNK_MIN` rows)."""
+    return max(IDX_CHUNK_MIN, min(IDX_CHUNK, IDX_CHUNK * 16384 // max(read_len, 1) // IDX_CHUNK_MIN * IDX_CHUNK_MIN))
 #: Tokens the sparse-attention loop interleaves an iteration (`attn_tokens_body`).
 ATTN_LANES = 16
 #: Lanes whose heads share the partitions in one softmax (`attn_tokens_setup`).
@@ -255,6 +265,12 @@ def _layer(a, arch, phase):
     dbg = nl.ndarray((Tp, max(width, heads * hd)) if stage != 9 else (1, 1),
                      dtype=nl.float32, buffer=nl.shared_hbm)
     topk_out = nl.ndarray((T, topk) if idx_src else (1, 1), dtype=nl.int32, buffer=nl.shared_hbm)
+    # the candidate-block mask (`index_candidates`): the candidate source computes it, the
+    # c1_index layers after it select under it; a [1, 1] `cand` (contexts within the mask) is off
+    cand = a.get("cand")
+    use_cand = cand is not None and cand.shape[0] > 1
+    cand_src = use_cand and arch == "c1_source"
+    cand_keep = cand if use_cand and arch == "c1_index" else None
     tap_out = nl.ndarray((T, dim) if tap else (1, 1), dtype=nl.float32, buffer=nl.shared_hbm)
 
     def outputs(first=None):
@@ -265,6 +281,8 @@ def _layer(a, arch, phase):
                 res += [pool_kv, pool_score]
         if idx_src:
             res.append(topk_out)
+        if cand_src:
+            res.append(cand)
         if tap:
             res.append(tap_out)
         return tuple(res)
@@ -377,7 +395,7 @@ def _layer(a, arch, phase):
     nisa.core_barrier(data=qr, cores=(0, 1))
     nisa.core_barrier(data=kv, cores=(0, 1))
     # This step's KV into the paged cache (the input, mutated in place).
-    scatter_rows(kv, a["write_slots"], window_kv_cache, mine, hd)
+    scatter_rows(kv, a["wwin_slots"], window_kv_cache, mine, hd)
     proj(qr, Tp, q_lora, a["wq_b"], q, heads * hd)
     nisa.core_barrier(data=q, cores=(0, 1))
     nisa.core_barrier(data=window_kv_cache, cores=(0, 1))
@@ -399,8 +417,8 @@ def _layer(a, arch, phase):
             # (the reference's `Compressor` above ratio 1).
             fp32_proj_rows(xn, a["cm_wkv_t"], pkv, mine, dim, hd)
             fp32_proj_rows(xn, a["cm_wgate_t"], psc, mine, dim, hd)
-            scatter_rows_f32(pkv, a["write_slots"], pool_kv, mine, hd)
-            scatter_rows_f32(psc, a["write_slots"], pool_score, mine, hd)
+            scatter_rows_f32(pkv, a["wwin_slots"], pool_kv, mine, hd)
+            scatter_rows_f32(psc, a["wwin_slots"], pool_score, mine, hd)
             nisa.core_barrier(data=pool_kv, cores=(0, 1))
             nisa.core_barrier(data=pool_score, cores=(0, 1))
             pool_groups(pool_kv, pool_score, a["grp_mslots"], gtiles, ratio, hd, lat_raw)
@@ -471,23 +489,28 @@ def _layer(a, arch, phase):
     topk_src = a["topk_in"] if ratio else None
     if idx_src:
         nisa.core_barrier(data=ktab, cores=(0, 1))
-        chunk = T if decode else min(IDX_CHUNK, T)
+        chunk = T if decode else min(idx_chunk(read_len), T)
         sc_src = nl.ndarray((chunk, read_len), dtype=nl.float32, buffer=nl.shared_hbm, name="sc_src")
         sc_dst = nl.ndarray((chunk, read_len), dtype=nl.float32, buffer=nl.shared_hbm, name="sc_dst")
         sc16 = nl.ndarray((chunk, read_len), dtype=nl.bfloat16, buffer=nl.shared_hbm, name="sc16")
+        cbs16 = (nl.ndarray((chunk, read_len // CAND_BLOCK), dtype=nl.bfloat16, buffer=nl.shared_hbm,
+                            name="cand_bs16") if cand_src else None)
         if decode:
             # every span's tokens in one chunk, each span against its own key table
             for b in range(nspans):
-                kT = build_ktT(ktab[b * read_len : (b + 1) * read_len], read_len, kd)
+                kT = build_ktT(ktab[b * read_len : (b + 1) * read_len], read_len, kd, pid=pid, name=f"ktT{b}")
                 half = cdiv(L, CORES)
                 tok0 = b * L + (0 if pid == 0 else L - half)
                 index_scores_tokens(qi, wi, kT, sc_src, tok0, half, tok0, nh_idx, read_len, kd)
             nisa.core_barrier(data=sc_src, cores=(0, 1))
             ncc.all_reduce(srcs=[sc_src], dsts=[sc_dst], replica_group=rg_attn, op=nl.add)
-            index_topk_rows(sc_dst, a["clen"], sc16, topk_out, 0, T, read_len, topk, pid)
+            if cand_src:
+                index_candidates(sc_dst, a["clen"], cbs16, cand, 0, T, read_len, pid)
+            index_topk_rows(sc_dst, a["clen"], sc16, topk_out, 0, T, read_len, topk, pid,
+                            keep_hbm=cand_keep)
         else:
             assert nspans == 1, "a prefill step is one sequence"
-            kT = build_ktT(ktab[0:read_len], read_len, kd)
+            kT = build_ktT(ktab[0:read_len], read_len, kd, pid=pid, name="ktT")
             for c0 in range(0, T, chunk):
                 n = min(chunk, T - c0)
                 half = cdiv(n, CORES)
@@ -495,7 +518,10 @@ def _layer(a, arch, phase):
                 index_scores_tokens(qi, wi, kT, sc_src, tok0, half, tok0 - c0, nh_idx, read_len, kd)
                 nisa.core_barrier(data=sc_src, cores=(0, 1))
                 ncc.all_reduce(srcs=[sc_src], dsts=[sc_dst], replica_group=rg_attn, op=nl.add)
-                index_topk_rows(sc_dst, a["clen"], sc16, topk_out, c0, n, read_len, topk, pid)
+                if cand_src:
+                    index_candidates(sc_dst, a["clen"], cbs16, cand, c0, n, read_len, pid)
+                index_topk_rows(sc_dst, a["clen"], sc16, topk_out, c0, n, read_len, topk, pid,
+                                keep_hbm=cand_keep)
         topk_src = topk_out
     attn_index_table(idx, mine, a["twin"], a["wv"], win, a.get("cbase"), topk_src, topk, kpad,
                      idxs_hbm=idxs, row0_copies=ntab_p)
@@ -754,7 +780,7 @@ def _layer(a, arch, phase):
 def window_decode(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
 ):
@@ -765,7 +791,7 @@ def window_decode(
 def window_prefill(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
 ):
@@ -776,7 +802,7 @@ def window_prefill(
 def window_engram_decode(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     hash_ids, etable, erow_start, e_wkv, e_qk,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
@@ -788,7 +814,7 @@ def window_engram_decode(
 def window_engram_prefill(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     hash_ids, etable, erow_start, e_wkv, e_qk,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
@@ -800,7 +826,7 @@ def window_engram_prefill(
 def c2_source_decode(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     pool_kv, pool_score, cm_wkv_t, cm_wgate_t, cm_norm_w, grp_pos, grp_mslots, grp_wslots,
     ix_wk, ix_knorm_w,
@@ -815,7 +841,7 @@ def c2_source_decode(
 def c2_source_prefill(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     pool_kv, pool_score, cm_wkv_t, cm_wgate_t, cm_norm_w, grp_pos, grp_mslots, grp_wslots,
     ix_wk, ix_knorm_w,
@@ -830,7 +856,7 @@ def c2_source_prefill(
 def c2_source_engram_decode(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     pool_kv, pool_score, cm_wkv_t, cm_wgate_t, cm_norm_w, grp_pos, grp_mslots, grp_wslots,
     ix_wk, ix_knorm_w,
@@ -846,7 +872,7 @@ def c2_source_engram_decode(
 def c2_source_engram_prefill(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     pool_kv, pool_score, cm_wkv_t, cm_wgate_t, cm_norm_w, grp_pos, grp_mslots, grp_wslots,
     ix_wk, ix_knorm_w,
@@ -862,7 +888,7 @@ def c2_source_engram_prefill(
 def c2_decode(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
@@ -874,7 +900,7 @@ def c2_decode(
 def c2_prefill(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
@@ -886,10 +912,10 @@ def c2_prefill(
 def c1_source_decode(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     cm_wkv, cm_norm_w, grp_pos, grp_wslots, ix_wk, ix_knorm_w,
-    index_k_cache, ix_wq_b, ix_wproj_t, clen,
+    index_k_cache, ix_wq_b, ix_wproj_t, clen, cand,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
 ):
@@ -900,10 +926,10 @@ def c1_source_decode(
 def c1_source_prefill(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     cm_wkv, cm_norm_w, grp_pos, grp_wslots, ix_wk, ix_knorm_w,
-    index_k_cache, ix_wq_b, ix_wproj_t, clen,
+    index_k_cache, ix_wq_b, ix_wproj_t, clen, cand,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
 ):
@@ -914,9 +940,9 @@ def c1_source_prefill(
 def c1_index_decode(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
-    index_k_cache, ix_wq_b, ix_wproj_t, clen,
+    index_k_cache, ix_wq_b, ix_wproj_t, clen, cand,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
 ):
@@ -927,9 +953,9 @@ def c1_index_decode(
 def c1_index_prefill(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
-    index_k_cache, ix_wq_b, ix_wproj_t, clen,
+    index_k_cache, ix_wq_b, ix_wproj_t, clen, cand,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
 ):
@@ -940,7 +966,7 @@ def c1_index_prefill(
 def c1_decode(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
@@ -952,7 +978,7 @@ def c1_decode(
 def c1_prefill(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
@@ -964,7 +990,7 @@ def c1_prefill(
 def c1_tap_decode(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,
@@ -976,7 +1002,7 @@ def c1_tap_decode(
 def c1_tap_prefill(
     stream, pre_mix, hca_fn_t, hca_base, hca_scale, attn_norm_w, hcf_fn_t, hcf_base, hcf_scale,
     ffn_norm_w, wq_a, q_norm_w, wq_b, wkv, kv_norm_w, wo_a, wo_b, attn_sink, freqs,
-    row_pos, write_slots, win_slots, twin, wv, window_kv_cache,
+    row_pos, write_slots, wwin_slots, win_slots, twin, wv, window_kv_cache,
     cmp_slots, cbase, topk_in, compress_kv_cache,
     gate_w_t, gate_b, expert_lo, live, w1, s1, w3, s3, w2, s2, sh_w1, sh_w3, sh_w2,
     groups_attn, groups_world, flags,

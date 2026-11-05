@@ -365,6 +365,65 @@ a lower bound on real traffic; the prose probe measured 47% (SDK 2.32) and 46%
 requests at concurrency 4 put the p50 between two waves; its throughput and
 mean TPOT are the stable figures.
 
+### Long contexts (up to 256K)
+
+The megakernels serve contexts past 16K, up to `--max-model-len 262144` on a
+`trn2.48xlarge`. Two settings are needed at those lengths (shown for 128K; for 256K use
+`--max-model-len 262144 --num-gpu-blocks-override 8193`):
+
+```bash
+DEEPSEEK_V41_WINDOW_POOL=1 \
+DEEPSEEK_V41_PREFILL_SEGMENT_TOKENS=1024 \
+python -m performance._serve_main ... \
+    --max-model-len 131072 --max-num-seqs 1 \
+    --num-gpu-blocks-override 4097   # max_model_len / block_size (32) + 1
+```
+
+- `DEEPSEEK_V41_WINDOW_POOL=1` keeps the window layers' KV in a small shared block pool
+  instead of vLLM's full-context allocation, which does not fit in HBM at 128K. Only
+  `layers.0` stays in vLLM's KV spec, as a 16-wide slot authority, so vLLM sizes its
+  block count from almost no bytes per block: `--num-gpu-blocks-override` must cap it.
+  The pool is off by default. On the megakernel path the ratio-2 compressor's fp32 pooling
+  inputs live in the pool too (a group's members are within the window), instead of one
+  row per KV slot (3 GiB at 256K).
+- Past 16384 compressed groups (16K tokens at the ratio-1 layers) the kernels apply the
+  candidate-block mask (`model.select_candidate_blocks`): layer 20 keeps the best 2048
+  blocks of 8 groups, and layers 24-36 select under it.
+- Past 8192 keys the index path works on column chunks: the key table is transposed once
+  a step into HBM, scores are batched `128 / index heads` tokens a matmul, and the top-k
+  is preselected by blocks of 16 keys. Below that, every helper runs the code it did.
+
+Measured on SDK 2.33, warm, bs1, DSpark on (HBM at 256K: 20-21 of 24 GiB):
+
+| prompt tokens | 128K server: TTFT / TPOT | 256K server: TTFT / TPOT |
+| --- | ---: | ---: |
+| 3,962 | 3.6 s / 52 ms | 5.0 s / 75 ms |
+| 31,214 | 30.5 s / 50 ms | |
+| 114,904 | 102 s / 41 ms | 142 s / 71 ms |
+| 229,724 | | 278 s / 79 ms |
+
+The index layers read up to `--max-model-len` whatever the live context
+(`_COMPRESS_READ_CEILING`), so a larger ceiling costs every request.
+`DEEPSEEK_V41_READ_BUCKETS=n` (default 1) reads the smallest of `n` buckets instead -- the
+ceiling, half of it, a quarter, ... -- that holds the live context, each bucket its own set
+of graphs (compiled, loaded and run for the first time when a request first reaches it).
+256K server, 4 buckets (256K/128K/64K/32K), warm (HBM 21 of 24 GiB):
+
+| prompt tokens | 1 bucket: TTFT / TPOT | 4 buckets: TTFT / TPOT |
+| --- | ---: | ---: |
+| 3,962 | 5.0 s / 75 ms | 2.6 s / 31 ms |
+| 31,214 | | 19.7 s / 30 ms |
+| 114,904 | 142 s / 71 ms | 87.6 s / 43 ms |
+| 229,724 | 278 s / 79 ms | 217 s / 63 ms |
+
+A needle (a code at 10%, 50% and 90% of a 30K and a 100K prompt) is recalled in 6 of 6
+cases on the 128K server, with the same reasoning text as the per-op path
+(`DEEPSEEK_V41_MEGAKERNEL=0`), and in 3 of 3 at 200K on the 256K server.
+
+`test/unit/test_index_long.py`, `test/unit/test_slot_table.py` and
+`test/unit/bench_index.py` cover the long-context index path, the decode slot table and
+the index path's time per 1024-row segment.
+
 ### Optional: unit and module tests
 
 `test/unit/` checks the megakernels against a CPU reference on a few cores,
