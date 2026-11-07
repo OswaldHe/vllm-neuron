@@ -254,5 +254,23 @@ The host gaps (4) are small. Thanks to async scheduling, the host has 4 to 5 ms 
 
 The same profile sizes what is left to gain: up to about 0.8 ms from folding or hiding the small all-reduces, 0.45 to 0.6 ms from fewer NEFF executions per step, about 0.9 ms from the drafter's latency-bound phases, up to about 1.2 ms from filling the all-reduce and routing windows with other work, and 0.2 to 0.55 ms from balancing the ranks. These overlap, and even together they do not reach a 5.3 ms step. Closing the rest of the gap requires shortening the dependency chain itself, not more bandwidth or FLOPs.
 
-## Agentic Optimization: Composition of RSI and Expert Knowledge
+## Composing RSI with Expert Knowledge: Agent-Expert Disaggregated Optimization
+
+![Agentic optimization flow](rpt_figs/agentic_flow.png)
+
+*Figure 10. Our agentic optimization flow. ① An agent ports the model until it meets the correctness constraint. ② We profile it, ③ the agent and a human grill the profile until the bottleneck is understood, and ④ the human sets new constraints. ⑤ The agent builds one workspace per subkernel with golden inputs and outputs traced from the live server, ⑥ runs a recursive self-improvement (RSI) loop on each subkernel in turn, starting each from the previous kernel's optimizations, and ⑦ integrates and tunes the kernels in the model. ⑧ A human reviews the round before the loop resumes at ②.*
+
+Figure 10 divides the work by the kind of task. The agent runs the loops whose task has five properties, and the human takes the steps that lack one of them (table below). A subkernel workspace (⑤) is built to have all five. The golden inputs and outputs give a clear constraint and a fast check, the kernel's latency on those inputs is the objective, and the agent may edit only the kernel file.
+
+| Property | Good fit for the agent self-improvement | Agents evolve slowly, needs a human expert |
+|---|---|---|
+| **Clear constraint** | The constraint can be checked: the kernel's output matches the golden output within tolerance, or bit for bit. | Correctness needs judgment: what counts as correct for the whole model, which tolerance to allow, and whether a summation-order difference is acceptable when the generated text is still right. |
+| **Quick verification and measurement** | A check takes minutes: a fused launch compiles and runs on its recorded inputs in about a minute, so a loop can try many variants. | A check is slow: an end-to-end check recompiles the whole model and serves real requests (the integration test alone takes about 11 minutes), and a profile must be captured and ingested before anyone can read it. The human picks the few experiments worth running. |
+| **Clear objective** | There is one number to improve: the kernel's latency on its recorded inputs. | The goal is a trade-off: what to optimize next, whether a second copy of the expert weights (9.4 GiB of HBM per rank) is worth a 27–37% lower TPOT, or how far the scheduler may run ahead before it costs TTFT. |
+| **Restricted editable scope** | The agent edits only the kernel file; its inputs, its outputs and the rest of the system stay fixed. | The change cuts across layers: async scheduling changed vLLM's scheduler and worker and added the on-device step prologue; TP8 × EP8 changed weight loading, the MoE kernels and their collectives. |
+| **Consistent incremental improvement** | Small edits pay: changing a few lines, such as a tile size, a buffer or the order of DMAs, gives a measurable speedup, so each accepted edit moves forward. | The change is worse before it is better: the first merged launch spilled 564 MB per step to HBM and was no faster than its parts until we tuned it. A loop that keeps only improving edits would have rejected it. |
+
+This is why the human's steps in Figure 10 sit where the loop turns: understanding the profile (③), setting the next constraints (④) and reviewing the round (⑧). Each of these turns an open problem into tasks that have all five properties, which the agent then runs on its own.
+
+
 
