@@ -1,17 +1,17 @@
 # DeepSeek V4.1 Flash on Trainium 3: Toward High Interactivity with Lower Cost Than GPUs 
 
-> Disclaimer: Every measurement in this blog comes from vLLM 0.29.0 with the vLLM Neuron plugin and Neuron SDK 2.33 (neuronx-cc 2.28, NKI 0.7.0), served on a single trn3.48xlarge instance with sonnet prompts, 128 output tokens and greedy decoding. Unless stated otherwise, latencies are medians at batch size 1. The B300 numbers come from a separate GB300 NVL72 deployment with Dynamo vLLM, and the Trainium 3 instance prices are estimates, so treat the cost comparison as reference only.
-
 ### Executive Summary
 
-- **DeepSeek V4.1 Flash decodes at 288 tokens per second per user on Trainium 3.** On 8 Trainium 3 devices, half of a trn3.48xlarge instance, the model runs at a median time per output token (TPOT) of 3.47 ms at batch size 1. Our first working port on Oct 22 decoded at 10 tokens/s on all 16 devices. In two weeks, decoding became 28.6x faster per user and about 57x more productive per device (Figure 1). Time to first token (TTFT) for a 1,024-token prompt dropped from 1,701 ms to 230 ms (Figure 2).
-- **The speedup came from the whole stack, not from one kernel.** We rewrote the model as NKI megakernels that use Trainium 3's native MX FP8/FP4 matmul, fused its 40 layers into a handful of launches, took the host off the critical path in vLLM's Neuron backend, and gave prefill and decode their own kernels and weight layouts. Agentic optimization loops tuned many of these kernels on launches recorded from the live server.
-- **Trainium 3 is 2.3x slower than B300 per user, but cheaper per token.** A GB300 NVL72 deployment on 4 B300 GPUs serves 653.6 tokens/s per user. At an estimated $47–51 per hour for a trn3.48xlarge, our 8-device replica produces 1.12–1.22x more output tokens per dollar. The remaining gap is not raw hardware: 8 Trainium 3 devices match 4 B300 GPUs in FP8 throughput and exceed them in HBM bandwidth. It comes from latency in a long chain of small operations, collectives and launches, which we analyze in the last section.
+We built and optimized DeepSeek V4.1 Flash inference for high interactivity on AWS Trainium 3 within **12 days**, achieving **3.1x** faster prefill and decode from PyTorch baseline using NKI kernels, and an additional **29x** faster decoding speed and **7x** faster response. The performance improvement comes from:
+- **Progressive Megakernel Fusion.** Each transformer block became one NKI kernel that runs its FP8 and FP4 matmuls natively on the MX Tensor Engine and keeps its working set in SBUF. We then fused layers until a batch-1 decode step needed 4 NEFF executions instead of hundreds of kernel launches. Agentic optimization loops tuned many of these kernels on launches recorded from the live server.
+- **Optimize vLLM Engine for Trainium.** One RPC per step, direct launches of cached NEFFs, and async scheduling with an on-device step prologue cut the device's idle time from 4.4–5.1 ms to 0.7 ms per step.
+- **Temporal Disaggregation to Customize Different Computations** Prefill and decode run separate kernels, and the decode MoE, shared expert and Engram projection switch to their own sharding (TP8 × EP8 for the MoE). The final deployment fits on 8 of the 16 devices of a trn3.48xlarge, so one instance can serve two high-interactivity sessions.
+
+Compared to GPU, our time to first token is on par with published GPU serving: 0.24 s for a 1,024-token prompt, against 0.2 s for Dynamo vLLM and 0.3 s for Together AI. Decoding is still 2.3x slower per user than a GB300 NVL72 deployment on 4 B300 GPUs (288 against 653.6 tokens/s). But at estimated instance prices, an 8-device Trainium 3 replica produces 1.12–1.22x more output tokens per dollar. The decode gap is not raw hardware, since 8 Trainium 3 devices match 4 B300 GPUs in FP8 throughput and exceed them in HBM bandwidth. It comes from latency in a long chain of small operations, collectives and launches, which we analyze in the last section.
 
 ![Optimization trajectory of DeepSeek V4.1 Flash on Trainium 3](rpt_figs/optimization_trajectory.png)
 
 *Figure 1. Batch-1 output speed per user (1000 / median TPOT; 512-token prompts, 128 output tokens) after each validated optimization round, Oct 22 to Nov 5. The shaded region is the same model on 8 of the 16 Trainium 3 devices.*
-
 ![Time to first token of DeepSeek V4.1 Flash on Trainium 3](rpt_figs/ttft_trajectory.png)
 
 *Figure 2. Batch-1 time to first token (median TTFT; 1,024-token prompts) for the same runs. It falls from 1,701 ms to 230 ms on 16 devices and is 244 ms on 8 devices; all of the gain comes from prefill kernels.*
@@ -223,7 +223,18 @@ The B300 cost is AWS's 8-GPU B300 instance at $130 per hour, pro-rated to 4 GPUs
 
 ## Comparison with GPU: What does the gap comes from?
 
-The B300 deployment serves 653.6 tokens/s per user, 2.27x more than Trainium 3. At our draft acceptance, about 3.5 tokens per decode step, matching it would require a 5.3 ms decode step instead of the current 12.1 ms. As we showed in the [hardware comparison](#aws-trainium-3-vs-nvidia-b300), the hardware itself is not the reason: 8 Trainium 3 devices have as much FP8 throughput as 4 B300 GPUs and 22% more HBM bandwidth. To find where the time goes, we profiled batch-1 decode on the 8-device deployment with 512-token prompts.
+For the first token, Trainium 3 is already on par with GPU serving. The table below compares TTFT for a 1,024-token prompt with two published GPU measurements from Oct 20.
+
+| Deployment | TTFT, 1K-token prompt | Source |
+|---|---|---|
+| Dynamo vLLM, concurrency 1 | 0.2 s | [SemiAnalysis InferenceX](https://inferencex.semianalysis.com/) |
+| Together AI | 0.3 s | [Artificial Analysis](https://artificialanalysis.ai/) |
+| Trainium 3, 16 devices (ours) | 0.23 s | median at batch size 1 |
+| Trainium 3, 8 devices (ours) | 0.24 s | median at batch size 1 |
+
+Our TTFT is close to Dynamo vLLM's and below Together AI's. The measurements are not identical: the published numbers are rounded to a tenth of a second, and an API benchmark such as Artificial Analysis measures from the client, network included. Still, prefill is no longer where Trainium 3 falls behind.
+
+Decode is. The B300 deployment serves 653.6 tokens/s per user, 2.27x more than Trainium 3. At our draft acceptance, about 3.5 tokens per decode step, matching it would require a 5.3 ms decode step instead of the current 12.1 ms. As we showed in the [hardware comparison](#aws-trainium-3-vs-nvidia-b300), the hardware itself is not the reason: 8 Trainium 3 devices have as much FP8 throughput as 4 B300 GPUs and 22% more HBM bandwidth. To find where the time goes, we profiled batch-1 decode on the 8-device deployment with 512-token prompts.
 
 The profile accounts for the whole 12.04 ms step. The device is busy for 11.70 ms (97%): 3.94 ms in the MoE, 3.38 ms in attention, 2.25 ms in collectives, 1.12 ms in the drafter, 0.54 ms in the indexer's top-k and 0.47 ms elsewhere. The host time between the four launches is only 0.34 ms. One layer takes about 216 µs: about 85 µs of attention, a 15 µs TP8 all-reduce, 96 µs of MoE and a 20 µs all-rank all-reduce.
 
