@@ -186,9 +186,9 @@ Each of the 9 block archetypes has a prefill kernel and a decode kernel, tuned s
 
 The DSpark drafter took 19% of a batch-1 decode step. We optimized its kernels the same way, making them 2.7x faster and bit-exact, and column-sharded its input projection (`main_proj`), which cut its weights from 79 MB to 1.2 MB per rank.
 
-![Sharding by computation: prefill and batched decode vs. single-stream decode](rpt_figs/sharding_prefill_vs_decode.png)
+![One transformer block, sharded for prefill and batched decode vs. batch-1 decode](rpt_figs/sharding_prefill_vs_decode.png)
 
-*Figure 8. How each computation's weights are laid out over the 64 ranks in each phase. An outlined box is one full copy of the weight; the shade says which slice a rank holds.*
+*Figure 8. One transformer block as a graph, laid out for prefill and batched decode (top) and for batch-1 decode (bottom). Each operation's color says how its weight is split over the 64 ranks, and its small bar shows the part one rank holds. For batch-1 decode, the routed experts change from EP64 (six whole experts per rank) to TP8 × EP8 (a column slice of each of the 48 experts in the rank's group), the shared expert is split by column over all 64 ranks, and the Engram projection is split over the attention group and all-gathered. AR n and AG n are an all-reduce and an all-gather over n ranks.*
 
 ### Serving Two High Interactivity Sessions at a Time
 
