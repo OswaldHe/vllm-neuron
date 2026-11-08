@@ -299,11 +299,17 @@ The model is a first-order estimate. It splits the bytes of each layer between e
 
 ## Composing RSI with Expert Knowledge: Agent-Expert Disaggregated Optimization
 
+We did not start with the flow in Figure 12. In our first attempts, during the Trainium 2 development, we ran the AutoHelix loop directly on the whole model. In each iteration an agent changed the port, and the loop compiled the model, served the full benchmark matrix and kept the change only if every constraint still held and no metric regressed by more than 5%. This gave only small improvements (Figure 11). On a trn2.48xlarge with 64 ranks, eight iterations over about 34 hours brought batch-1 TPOT at 512 tokens from 103.5 ms to 90.7 ms (12%) and TTFT from 860 ms to 729 ms (15%). Five of the eight iterations were rejected. Four of them failed on the TTFT of 8,192-token prompts at batch 4, a median over eight requests that flips between two values from run to run, and one of those four had cut TTFT at 512 and 1,024 tokens by 18 to 23%. An iteration took up to four hours, so the loop tried only a handful of ideas a day and judged each one by a noisy end-to-end number. Run on the whole model, the loop lacked most of the five properties in the table below, and the flow is built to restore them.
+
+![The whole-model AutoHelix loop on Trainium 2](rpt_figs/autohelix_trn2.png)
+
+*Figure 11. The whole-model AutoHelix loop during our Trainium 2 development (trn2.48xlarge, 64 ranks, Oct 22–23): batch-1 TPOT (left) and TTFT (right) for 512-token prompts after each iteration, on axes that start at zero. The line is the model the loop kept; iterations 3, 4 and 6–8 were rejected.*
+
 ![Agentic optimization flow](rpt_figs/agentic_flow.png)
 
-*Figure 11. Our agentic optimization flow. ① An agent ports the model until it meets the correctness constraint. ② We profile it, ③ the agent and a human grill the profile until the bottleneck is understood, and ④ the human sets new constraints. ⑤ The agent builds one workspace per subkernel with golden inputs and outputs traced from the live server, ⑥ runs a recursive self-improvement (RSI) loop on each subkernel in turn, starting each from the previous kernel's optimizations, and ⑦ integrates and tunes the kernels in the model. ⑧ A human reviews the round before the loop resumes at ②.*
+*Figure 12. Our agentic optimization flow. ① An agent ports the model until it meets the correctness constraint. ② We profile it, ③ the agent and a human grill the profile until the bottleneck is understood, and ④ the human sets new constraints. ⑤ The agent builds one workspace per subkernel with golden inputs and outputs traced from the live server, ⑥ runs a recursive self-improvement (RSI) loop on each subkernel in turn, starting each from the previous kernel's optimizations, and ⑦ integrates and tunes the kernels in the model. ⑧ A human reviews the round before the loop resumes at ②.*
 
-Figure 11 divides the work by the kind of task. The agent runs the loops whose task has five properties, and the human takes the steps that lack one of them (table below). A subkernel workspace (⑤) is built to have all five. The golden inputs and outputs give a clear constraint and a fast check, the kernel's latency on those inputs is the objective, and the agent may edit only the kernel file.
+Figure 12 divides the work by the kind of task. The agent runs the loops whose task has five properties, and the human takes the steps that lack one of them (table below). A subkernel workspace (⑤) is built to have all five. The golden inputs and outputs give a clear constraint and a fast check, the kernel's latency on those inputs is the objective, and the agent may edit only the kernel file.
 
 | Property | Good fit for the agent self-improvement | Agents evolve slowly, needs a human expert |
 |---|---|---|
@@ -313,7 +319,7 @@ Figure 11 divides the work by the kind of task. The agent runs the loops whose t
 | **Restricted editable scope** | The agent edits only the kernel file; its inputs, its outputs and the rest of the system stay fixed. | The change cuts across layers: async scheduling changed vLLM's scheduler and worker and added the on-device step prologue; TP8 × EP8 changed weight loading, the MoE kernels and their collectives. |
 | **Consistent incremental improvement** | Small edits pay: changing a few lines, such as a tile size, a buffer or the order of DMAs, gives a measurable speedup, so each accepted edit moves forward. | The change is worse before it is better: the first merged launch spilled 564 MB per step to HBM and was no faster than its parts until we tuned it. A loop that keeps only improving edits would have rejected it. |
 
-This is why the human's steps in Figure 11 sit where the loop turns: understanding the profile (③), setting the next constraints (④) and reviewing the round (⑧). Each of these turns an open problem into tasks that have all five properties, which the agent then runs on its own.
+This is why the human's steps in Figure 12 sit where the loop turns: understanding the profile (③), setting the next constraints (④) and reviewing the round (⑧). Each of these turns an open problem into tasks that have all five properties, which the agent then runs on its own.
 
 
 
