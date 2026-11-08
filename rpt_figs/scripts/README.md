@@ -17,6 +17,7 @@ Each script writes to an `out/` folder next to it, which is gitignored. Copy the
 | 10 | `trace_annotated.png` | `trace_annot.py` (reads `rpt_figs/trace.png`) | `trace_annotated.png` | 2x |
 | 11 | `autohelix_trn2.png` | `autohelix_trn2/ah_trn2.py` | `autohelix_trn2/out/autohelix_trn2.png` | 4x |
 | 12 | `agentic_flow.png` | `agentic/agentic.py` | `agentic/out/agentic_flow.png` | 6x |
+| 13 | `agent_expert_system.png` | `agent_expert/agent_expert.py` | `agent_expert/out/agent_expert.png` | 6x |
 
 Figure 3, `dsv41_architecture.png`, has no script. It is Figure 3 of the DeepSeek-V4.1-Flash technical report, cropped from the PDF. `trace.png` is a Neuron Explorer screenshot; `trace_annot.py` uses it as input.
 
@@ -41,7 +42,7 @@ cp out/trajectory.png ../optimization_trajectory.png
 - `blogkit.py`: the palette, SVG primitives, text measuring, the Chromium renderer and GIF assembly. Every script imports it.
 - `anim.py`: the keyframe tween engine for the two GIFs, including the segmented progress bar.
 - `preview_states.py`: renders single GIF keyframes for checking.
-- `agentic/`, `two_sessions/`: `brief.md` and `plan.md` hold the design notes behind these FigGenie diagrams.
+- `agentic/`, `two_sessions/`, `agent_expert/`: `brief.md` and `plan.md` hold the design notes behind these FigGenie diagrams.
 - Data:
   - The data points are typed into the scripts, with their sources in each script's docstring or comments.
   - `traj.py` and `ttft.py` take their numbers from the bench reports under `contrib/models/deepseek_v41*/test/performance/`.

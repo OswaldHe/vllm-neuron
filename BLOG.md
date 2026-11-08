@@ -321,5 +321,11 @@ Figure 12 divides the work by the kind of task. The agent runs the loops whose t
 
 This is why the human's steps in Figure 12 sit where the loop turns: understanding the profile (③), setting the next constraints (④) and reviewing the round (⑧). Each of these turns an open problem into tasks that have all five properties, which the agent then runs on its own.
 
+Taken together, we treat optimization as a heterogeneous system of two unlike processors (Figure 13). The self-improving agent hill-climbs on a clear objective, much as an accelerator runs a well-defined kernel at high throughput. The human expert takes the work that needs a holistic view, a decision or the analysis of a complex task. Three links connect them. Grilling (①) runs in both directions until the agent and the human share the same picture of the problem. Constraints (②) go from the human to the agent and turn an open goal into a constrained optimization problem. Feedback (③) returns the results of the optimization to the human, who decides what comes next. In Figure 12, these links are steps ③, ④ and ⑧. As in any heterogeneous system, the gain comes from giving each side the work it does best.
+
+![Agent-expert heterogeneous system](rpt_figs/agent_expert_system.png)
+
+*Figure 13. Optimization as an agent–expert heterogeneous system. The human expert brings a holistic view, decision making and the analysis of complex tasks; the self-improving agent hill-climbs on a clear objective, keeping an edit only when it verifies and measures better. ① Grilling syncs the idea in both directions, ② the human sends constraints for a constrained optimization, and ③ the agent feeds the results back. Arrow colours show the sender.*
+
 
 
