@@ -12,13 +12,13 @@ HERE = Path(__file__).parent
 OUT = HERE / 'out'
 OUT.mkdir(exist_ok=True)
 
-W, H = 680, 222
+W, H = 500, 228
 INK2 = '#3b4552'
 TS, LS, SS = 9.5, 8.0, 6.8            # titles, labels, small
-HX0, HX1 = 24, 246                    # human expert box
-AX0, AX1 = 434, 656                   # agent box
-BY0, BY1 = 38, 206                    # both boxes
-LINKS = [94, 136, 178]                # link y (centre)
+HX0, HX1 = 20, 190                    # human expert box
+AX0, AX1 = 310, 480                   # agent box
+BY0, BY1 = 20, 216                    # both boxes
+LINKS = [86, 136, 186]                # link y (centre)
 
 
 def g(id_, items, kind=None, extra=''):
@@ -62,23 +62,22 @@ def build():
          '<defs><marker id="ahloop" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.4" markerHeight="3.4" '
          f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{PURPLE}"/></marker></defs>']
     # the system
-    b.append(g('c:system', [rect(8, 8, W - 16, H - 16, fill=PANEL, stroke=GREY_D, sw=0.9, rx=7, dash='4 3'),
-                            text(W / 2, 25, 'Agent–expert heterogeneous system', size=TS, weight='bold',
-                                 anchor='middle', fill=INK2)]))
+    b.append(g('c:system', [rect(8, 8, W - 16, H - 16, fill=PANEL, stroke=GREY_D, sw=0.9, rx=7, dash='4 3')]))
 
     # ---- human expert ----
     hb = [rect(HX0, BY0, HX1 - HX0, BY1 - BY0, fill=BG, stroke=INK2, sw=1.0, rx=6),
           person(HX0 + 16, BY0 + 15, s=1.15),
           text(HX0 + 28, BY0 + 18.5, 'Human expert', size=TS, weight='bold', fill=INK2)]
     caps = [('Holistic view', 'the whole system, across layers'),
+            ('Expert knowledge', 'shortcuts the exploration'),
             ('Decision making', 'trade-offs, what to optimize next'),
             ('Analysis of complex tasks', 'profiles, root causes, open problems')]
-    cy0, ch, gap = BY0 + 32, 38, 7
+    cy0, ch, gap = BY0 + 32, 34, 6
     for i, (t, ex) in enumerate(caps):
         y = cy0 + i * (ch + gap)
-        hb += [rect(HX0 + 10, y, HX1 - HX0 - 20, ch, fill=GREY_L, stroke=GREY_M, sw=0.7, rx=3),
-               text(HX0 + 20, y + 15.5, t, size=LS, weight='bold', fill=INK),
-               text(HX0 + 20, y + 28.5, ex, size=SS, fill=MUTED)]
+        hb += [rect(HX0 + 8, y, HX1 - HX0 - 16, ch, fill=GREY_L, stroke=GREY_M, sw=0.7, rx=3),
+               text(HX0 + 16, y + 14, t, size=LS, weight='bold', fill=INK),
+               text(HX0 + 16, y + 26.5, ex, size=SS, fill=MUTED)]
     b.append(g('n:human', hb, 'node'))
 
     # ---- self-improving agent ----
@@ -86,9 +85,9 @@ def build():
           loop_glyph(AX0 + 16, BY0 + 15),
           text(AX0 + 28, BY0 + 18.5, 'Self-improving agent', size=TS, weight='bold', fill=PURPLE)]
     # the capability: hill-climbing on a clear objective (schematic)
-    px0, px1, py0, py1 = AX0 + 10, AX1 - 10, BY0 + 32, BY1 - 10
+    px0, px1, py0, py1 = AX0 + 8, AX1 - 8, BY0 + 32, BY1 - 10
     ab += [rect(px0, py0, px1 - px0, py1 - py0, fill=PURPLE_L, stroke='none', rx=3, op=0.55),
-           text(px0 + 10, py0 + 15.5, 'Hill-climbing on a clear objective', size=LS, weight='bold', fill=INK)]
+           text(px0 + 8, py0 + 15.5, 'Hill-climbing on a clear objective', size=LS, weight='bold', fill=INK)]
     cx0, cx1, cy_top, cy_bot = px0 + 22, px1 - 12, py0 + 26, py1 - 30
     ab += [line(cx0, cy_bot, cx1, cy_bot, stroke=GREY_D, sw=0.7),
            line(cx0, cy_bot, cx0, cy_top, stroke=GREY_D, sw=0.7),
