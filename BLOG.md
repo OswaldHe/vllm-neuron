@@ -27,6 +27,7 @@ Compared to GPU, our time to first token is on par with published GPU serving: 0
   - [Temporal PD/AFD: Specialized Kernels/Parallelization for Different Computations](#temporal-pdafd-specialized-kernelsparallelization-for-different-computations)
   - [Serving Two High Interactivity Sessions at a Time](#serving-two-high-interactivity-sessions-at-a-time)
 - [Comparison with GPU: What does the gap comes from?](#comparison-with-gpu-what-does-the-gap-comes-from)
+  - [What if Trainium 3 were organized like four GPUs?](#what-if-trainium-3-were-organized-like-four-gpus)
 - [Agentic Optimization: Composition of RSI and Expert Knowledge](#agentic-optimization-composition-of-rsi-and-expert-knowledge)
 
 ---
@@ -244,15 +245,53 @@ Neither memory bandwidth nor compute sets this time. A rank moves 3.24 GB per st
 
 *Figure 9. Device timeline of batch-1 decode on one rank in Neuron Explorer. (1) DMA throughput is high; (2) collectives and barriers stall the engines; (3) throttling leaves the engines intermittently underused; (4) host gaps between launches.*
 
-The DMA queues look busy throughout the step (1): DMA is in flight in 93% of 10-µs windows. However, only 19% of those windows move data faster than 300 GB/s, and the median is 93 GB/s. Only the expert-weight bursts in the MoE reach about 340 GB/s per core. For about 6.0 ms of the step, a core moves less than 40 GB/s, because it is computing with no load in flight (2.55 ms), running collectives (1.39 ms), waiting on semaphores (1.10 ms), or crossing launch boundaries and barriers (about 0.8 ms).
+The DMA queues look busy throughout the step (1): DMA is in flight in 93% of 10-µs windows. However, only 19% of those windows move data faster than 300 GB/s, and the median is 93 GB/s. Only the expert-weight bursts in the MoE reach about 340 GB/s per core. (Neuron Explorer's HBM throughput track looks almost empty next to the DMA track. It counts only transfers whose source and destination the profiler can resolve, and 98.5% of our DMA bytes use descriptors generated on the device at run time, so the track shows about 1% of the traffic. We therefore count HBM traffic from the DMA packets.)
 
-Collectives and barriers (2) take 2.25 ms per step. A step runs 111 collectives: 51 TP8 all-reduces with a median of 14.8 µs, 47 all-rank all-reduces with a median of 20.0 µs, 9 all-gathers and 4 entry barriers. Each all-reduce carries about 120 KB, so its cost is latency rather than bandwidth. Rank 0 also spends 553 µs per step waiting for other ranks to arrive, because the Engram gather is done only by the rank that owns the token's vocabulary shard, and because the expert-parallel load is uneven.
+Looking at the 16 DMA engines of each physical core makes the picture clearer. An engine has a packet in flight for only 37% of the step on core 0 and 33% on core 1. Collectives explain little of this: only 21–23% of the idle engine time falls inside them. The rest happens while the core runs its own layers:
+
+| Outside collectives (9.68 ms per step) | Core 0 | Core 1 | Share of idle engine time |
+|---|---|---|---|
+| Computing, no DMA in flight | 3.17 ms | 3.52 ms | 55% |
+| Data moving on only some engines (6.6 of 16 on average) | 2.85 ms | 2.81 ms | 26–29% |
+| Whole core stalled on a semaphore | 0.55 ms | 0.59 ms | 9–10% |
+| Between launches | 0.24 ms | 0.24 ms | 4% |
+| Nothing running | 0.14 ms | 0.35 ms | 3–6% |
+| All 16 engines busy | 2.73 ms | 2.18 ms | – |
+
+Most of the idle time is the dependency chain at work. While a core computes, it often cannot issue its next load, because the load's address depends on the result: the expert weights wait for the routing (`route_group`), the KV gather waits for the indexer's top-k (`topk_tables`), and the MoE waits for attention. The core does not prefetch the next block's weights at these times either. The kernels prefetch mainly during the all-rank all-reduces, because a wider prefetch competed with the all-reduces and was a net loss ([Step 4](#step-4-overlap-collectives-with-the-next-layer)), and SBUF limits how much more they can hold. When data does move, it often moves on few engines. The median DMA packet is 384 B (the rows of a six-row batch, index and slot tables, small weight slices), too small to spread across 16 engines. Only the large weight loads, the expert burst and the next-layer prefetch, keep all 16 engines busy.
+
+When the whole core stalls on a semaphore, it waits for one of three things. Most often (0.30–0.38 ms per step), it waits at a barrier that the compiler inserts at about 280 section boundaries per step inside the fused launches, such as the end of a block's MoE. Every engine drains its outstanding instructions and DMAs, resets its semaphores and waits until all engines arrive, so no load can stay in flight across the boundary. Next (0.14–0.16 ms), one physical core waits for the other, because the two cores of a logical core split each block and exchange partial results. Least (0.06–0.08 ms), an engine waits for a DMA it issued to start moving data. Engines also wait on each other constantly, but almost always while another engine is working, so these waits do not stall the core.
+
+Collectives and barriers (2) take 2.25 ms per step. A step runs 111 collectives: 51 TP8 all-reduces with a median of 14.8 µs, 47 all-rank all-reduces with a median of 20.0 µs, 9 all-gathers and 4 entry barriers. Each all-reduce carries about 120 KB, so its cost is latency rather than bandwidth. Rank 0 also spends 553 µs per step waiting for other ranks to arrive, because the Engram gather is done only by the rank that owns the token's vocabulary shard, and because the expert-parallel load is uneven. The two kinds of all-reduce use the DMA engines differently. The all-rank all-reduces carry the next block's weight prefetch and keep 31–36% of the engines busy. Nothing is queued behind the TP8 all-reduces, so for their 0.78 ms per step only 10–11% of the engines are busy. Even if collectives took no time at all, engine utilization would only rise to that of the rest of the step, about 40% on core 0.
 
 Throttling (3) leaves the engines intermittently underused. The profile's throttle records show an activity throttle with a 50% utilization limit engaged for about two thirds of the step on every rank, switching on and off about 700 times per step with a median interval of 5 µs. We have not yet measured how much time it costs.
 
 The host gaps (4) are small. Thanks to async scheduling, the host has 4 to 5 ms of slack in each 12 ms step, and the gaps between the four launches are 75 to 99 µs. Each launch boundary still costs 150 to 200 µs of device time, about 0.67 ms per step: the runtime notices the end of a launch, switches models in 50 to 73 µs, runs a preamble and about 100 small loads before the weights, and waits 63 µs at the next launch's entry barrier.
 
-The same profile sizes what is left to gain: up to about 0.8 ms from folding or hiding the small all-reduces, 0.45 to 0.6 ms from fewer NEFF executions per step, about 0.9 ms from the drafter's latency-bound phases, up to about 1.2 ms from filling the all-reduce and routing windows with other work, and 0.2 to 0.55 ms from balancing the ranks. These overlap, and even together they do not reach a 5.3 ms step. Closing the rest of the gap requires shortening the dependency chain itself, not more bandwidth or FLOPs.
+The same profile sizes what is left to gain: up to about 0.8 ms from folding or hiding the small all-reduces, 0.45 to 0.6 ms from fewer NEFF executions per step, about 0.9 ms from the drafter's latency-bound phases, up to about 1.2 ms from filling the all-reduce and routing windows with other work, and 0.2 to 0.55 ms from balancing the ranks. Wider small loads and fewer section boundaries inside the launches would help as well, but we have not sized them yet. These overlap, and even together they do not reach a 5.3 ms step. Closing the rest of the gap requires shortening the dependency chain itself, not more bandwidth or FLOPs.
+
+### What if Trainium 3 were organized like four GPUs?
+
+The B300 deployment runs the model on 4 GPUs; ours runs it on 32 ranks. To see how much of the decode gap comes from this difference in shape rather than from the chip, we built an analytical model of the decode step from the profile above. We then applied it to a hypothetical system: the same 8 Trainium 3 devices regrouped into 4 ranks, each with the compute and HBM bandwidth of 2 devices (5 PFLOPS FP8 and 9.8 TB/s), and connected by NVLink 5 at 1.8 TB/s per rank. Attention and the indexer then run TP4 instead of TP8 copied 4 times, and the MoE runs TP4, so every rank holds a quarter of every expert.
+
+The model takes every compute piece and every collective of the measured step as input. It sorts each function's engine time by how it scales on the new layout. Work split across all ranks, such as the experts and the LM head, keeps its time per rank, because a rank does 8x the work with 8x the resources. Attention work drops to a quarter, and work that every rank repeats (hyper-connections, Sinkhorn, norms, routing) drops to an eighth. The model scales the bytes the same way, and it sorts every stall by what the core waits for. The wait for the other physical core of a rank disappears, section barriers and waits on other engines shrink with the compute, and DMA start-up, drains and runtime waits stay as they are. Each collective costs 5 µs on NVLink, which is our assumption (3–8 µs moves the step by about ±0.25 ms). With balanced experts, no rank waits for the busiest expert group, and the remaining waits for late ranks shrink with the compute. Host gaps stay as measured. With every factor set to 1, the model reproduces today's 12.04 ms step.
+
+| Change, applied in order | Step, ideal scaling | Step, fixed per-instruction cost |
+|---|---|---|
+| Today: 32 ranks on NeuronLink | 12.04 ms | 12.04 ms |
+| 4 ranks on NVLink 5 | 10.85 ms | 10.85 ms |
+| + attention and indexer not copied | 8.97 ms | 9.56 ms |
+| + repeated work on 8x resources per rank | 7.00 ms | 8.08 ms |
+| + one device per rank, no core-to-core sync | 6.60 ms | 7.74 ms |
+| + balanced MoE | 6.48 ms | 7.61 ms |
+| + 15 PFLOPS FP4 and 2.5 PFLOPS BF16 per rank, as on a B300 | 5.55 ms | 7.01 ms |
+| Output speed per user | 629 tokens/s | 498 tokens/s |
+
+The two columns bound the result. With ideal scaling, every instruction's time shrinks with the data it handles. With fixed per-instruction cost, every instruction keeps the fixed part of its time (the 10th-percentile duration on its engine, about a third of engine time today), because the small repeated operations still issue as many instructions on a bigger rank.
+
+Organized like the GPU deployment, the same silicon would come within 4% of the B300's 5.34 ms step with ideal scaling, and would reach 498 tokens/s per user with the per-instruction cost. Most of the gain comes from the shape, not from the interconnect or the FLOPs. Removing the copies of attention and running repeated work on bigger ranks saves 2.8 to 3.9 ms, faster collectives save 1.2 ms, and dropping the core-to-core sync and balancing the experts save another 0.5 ms. The FP4 and BF16 FLOPs of a B300 add only 0.6 to 0.9 ms. At batch size 1, the Tensor Engine streams the expert weights past only six activation rows, and most of its time overlaps work on the other engines. What is left at 5.55 ms is mostly the MoE (2.4 ms), whose expert work keeps its time per rank, about 0.9 ms of drains and runtime waits, 0.7 ms of collectives and the 0.34 ms of host gaps. The step stays bound by the compute chain: moving its bytes at full DMA speed would take only 1.1 ms.
+
+The model is a first-order estimate. It splits the bytes of each layer between expert weights, attention-head weights and repeated reads using the model's configuration rather than measurements. It assumes that a bigger rank spreads its work without new overhead, and it keeps the number of collectives unchanged.
 
 ## Composing RSI with Expert Knowledge: Agent-Expert Disaggregated Optimization
 
