@@ -192,9 +192,13 @@ The DSpark drafter took 19% of a batch-1 decode step. We optimized its kernels t
 
 ### Serving Two High Interactivity Sessions at a Time
 
-At batch size 1, 64 ranks turned out to be more parallelism than the model needs. We therefore ported the model to 8 of the 16 devices: 32 ranks on devices 0–7, with TP = 32 and a TP8 × EP4 decode MoE. This leaves the other half of the instance free for a second replica.
+At batch size 1, 64 ranks turned out to be more parallelism than the model needs. We therefore ported the model to 8 of the 16 devices: 32 ranks on devices 0–7, with TP = 32 and a TP8 × EP4 decode MoE. This leaves the other half of the instance free for a second replica (Figure 9).
 
 The first challenge was memory. A logical core has 36 GiB of HBM, and the first 32-rank run ran out of memory at 28.7 GiB in use, while it built the decode MoE's TP × EP copy. Two changes made it fit. The Engram tables stay in FP8 instead of BF16 (2 × 2.95 GiB per rank instead of 2 × 5.72 GiB), and the per-op FP8 weights are freed once their MX copy exists. Memory use dropped to 20.4 GiB before the TP × EP copy and to about 30 GiB after it.
+
+![Two 8-device engines on one trn3.48xlarge](rpt_figs/two_sessions_8dev.png)
+
+*Figure 9. One trn3.48xlarge split into two independent 8-device engines, each serving one user. Each engine runs TP = 32 on its own devices, and each linked device pair (green) holds one attention TP8 copy and one group of 96 routed experts of the TP8 × EP4 decode MoE.*
 
 With half of the ranks, each rank holds twice as many routed experts and Engram rows, so we also had to make the 8-device step faster. The batch-1 decode MoE uses five packed static expert slots per core instead of a loop bounded at run time. The step prologue is fused into the first launch and the verification into the drafter launch, so a batch-1 step is 4 NEFF executions instead of 6. Finally, we optimized the decode launches again on their recorded 32-rank launches: the head GEMM is column-tiled on K-major head rows, and the on-chip blocks got scheduling fixes. Together with a faster drafter, these changes saved about 0.5 ms of device time per step, bit-exact.
 
@@ -239,11 +243,11 @@ Decode is. The B300 deployment serves 653.6 tokens/s per user, 2.27x more than T
 
 The profile accounts for the whole 12.04 ms step. The device is busy for 11.70 ms (97%): 3.94 ms in the MoE, 3.38 ms in attention, 2.25 ms in collectives, 1.12 ms in the drafter, 0.54 ms in the indexer's top-k and 0.47 ms elsewhere. The host time between the four launches is only 0.34 ms. One layer takes about 216 µs: about 85 µs of attention, a 15 µs TP8 all-reduce, 96 µs of MoE and a 20 µs all-rank all-reduce.
 
-Neither memory bandwidth nor compute sets this time. A rank moves 3.24 GB per step, which would take about 3.1 ms at the DMA peak, and its mean rate over the step is 271 GB/s, about 23% of the HBM peak. On 16 devices, the same analysis puts the floors at about 3.0 ms for HBM traffic, 1.0 ms for compute and 1.2 ms for collectives, against a 12.6 ms step. Instead, the step is set by a long chain of small, dependent operations. Figure 9 shows a decode step on one rank, with the four costs that dominate it.
+Neither memory bandwidth nor compute sets this time. A rank moves 3.24 GB per step, which would take about 3.1 ms at the DMA peak, and its mean rate over the step is 271 GB/s, about 23% of the HBM peak. On 16 devices, the same analysis puts the floors at about 3.0 ms for HBM traffic, 1.0 ms for compute and 1.2 ms for collectives, against a 12.6 ms step. Instead, the step is set by a long chain of small, dependent operations. Figure 10 shows a decode step on one rank, with the four costs that dominate it.
 
 ![Annotated device trace of decode steps](rpt_figs/trace_annotated.png)
 
-*Figure 9. Device timeline of batch-1 decode on one rank in Neuron Explorer. (1) DMA throughput is high; (2) collectives and barriers stall the engines; (3) throttling leaves the engines intermittently underused; (4) host gaps between launches.*
+*Figure 10. Device timeline of batch-1 decode on one rank in Neuron Explorer. (1) DMA throughput is high; (2) collectives and barriers stall the engines; (3) throttling leaves the engines intermittently underused; (4) host gaps between launches.*
 
 The DMA queues look busy throughout the step (1): DMA is in flight in 93% of 10-µs windows. However, only 19% of those windows move data faster than 300 GB/s, and the median is 93 GB/s. Only the expert-weight bursts in the MoE reach about 340 GB/s per core. (Neuron Explorer's HBM throughput track looks almost empty next to the DMA track. It counts only transfers whose source and destination the profiler can resolve, and 98.5% of our DMA bytes use descriptors generated on the device at run time, so the track shows about 1% of the traffic. We therefore count HBM traffic from the DMA packets.)
 
@@ -297,9 +301,9 @@ The model is a first-order estimate. It splits the bytes of each layer between e
 
 ![Agentic optimization flow](rpt_figs/agentic_flow.png)
 
-*Figure 10. Our agentic optimization flow. ① An agent ports the model until it meets the correctness constraint. ② We profile it, ③ the agent and a human grill the profile until the bottleneck is understood, and ④ the human sets new constraints. ⑤ The agent builds one workspace per subkernel with golden inputs and outputs traced from the live server, ⑥ runs a recursive self-improvement (RSI) loop on each subkernel in turn, starting each from the previous kernel's optimizations, and ⑦ integrates and tunes the kernels in the model. ⑧ A human reviews the round before the loop resumes at ②.*
+*Figure 11. Our agentic optimization flow. ① An agent ports the model until it meets the correctness constraint. ② We profile it, ③ the agent and a human grill the profile until the bottleneck is understood, and ④ the human sets new constraints. ⑤ The agent builds one workspace per subkernel with golden inputs and outputs traced from the live server, ⑥ runs a recursive self-improvement (RSI) loop on each subkernel in turn, starting each from the previous kernel's optimizations, and ⑦ integrates and tunes the kernels in the model. ⑧ A human reviews the round before the loop resumes at ②.*
 
-Figure 10 divides the work by the kind of task. The agent runs the loops whose task has five properties, and the human takes the steps that lack one of them (table below). A subkernel workspace (⑤) is built to have all five. The golden inputs and outputs give a clear constraint and a fast check, the kernel's latency on those inputs is the objective, and the agent may edit only the kernel file.
+Figure 11 divides the work by the kind of task. The agent runs the loops whose task has five properties, and the human takes the steps that lack one of them (table below). A subkernel workspace (⑤) is built to have all five. The golden inputs and outputs give a clear constraint and a fast check, the kernel's latency on those inputs is the objective, and the agent may edit only the kernel file.
 
 | Property | Good fit for the agent self-improvement | Agents evolve slowly, needs a human expert |
 |---|---|---|
@@ -309,7 +313,7 @@ Figure 10 divides the work by the kind of task. The agent runs the loops whose t
 | **Restricted editable scope** | The agent edits only the kernel file; its inputs, its outputs and the rest of the system stay fixed. | The change cuts across layers: async scheduling changed vLLM's scheduler and worker and added the on-device step prologue; TP8 × EP8 changed weight loading, the MoE kernels and their collectives. |
 | **Consistent incremental improvement** | Small edits pay: changing a few lines, such as a tile size, a buffer or the order of DMAs, gives a measurable speedup, so each accepted edit moves forward. | The change is worse before it is better: the first merged launch spilled 564 MB per step to HBM and was no faster than its parts until we tuned it. A loop that keeps only improving edits would have rejected it. |
 
-This is why the human's steps in Figure 10 sit where the loop turns: understanding the profile (③), setting the next constraints (④) and reviewing the round (⑧). Each of these turns an open problem into tasks that have all five properties, which the agent then runs on its own.
+This is why the human's steps in Figure 11 sit where the loop turns: understanding the profile (③), setting the next constraints (④) and reviewing the round (⑧). Each of these turns an open problem into tasks that have all five properties, which the agent then runs on its own.
 
 
 
