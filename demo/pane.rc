@@ -1,0 +1,5 @@
+# Sourced in the chat pane by launch.sh: venv, demo dir, short prompt.
+source "${VENV:-/opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0}/bin/activate"
+cd "$(dirname "${BASH_SOURCE[0]}")"
+export PS1='\[\e[1;38;5;114m\]\u@trn3\[\e[0m\]:\[\e[1;38;5;117m\]\W\[\e[0m\]\$ '
+clear
