@@ -1,0 +1,7 @@
+[23:52:20] integration start
+[00:00:11] integration exit 0 ================== 1 passed, 17 warnings in 469.24s (0:07:49) ==================
+[00:00:11] bench bs1 start
+[00:20:51] bench bs1 exit 0
+[00:20:51] bench ms10 start
+[00:40:37] bench ms10 exit 0
+[00:40:37] chain done
