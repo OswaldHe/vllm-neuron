@@ -1,0 +1,46 @@
+ exec   neff  core   dur_us                  detail
+    8 af65d7     0 2236.979 busy 1919.8 us (85.8 %)
+    8 af65d7     1 2236.979 busy 1955.8 us (87.4 %)
+    9 787f53     0 4063.305 busy 3562.2 us (87.7 %)
+    9 787f53     1 4063.305 busy 3509.0 us (86.4 %)
+   10 484ce3     0 3877.951 busy 3544.0 us (91.4 %)
+   10 484ce3     1 3877.951 busy 3484.4 us (89.9 %)
+   11 ca4943     0 1492.990 busy 1175.1 us (78.7 %)
+   11 ca4943     1 1492.990 busy 1270.7 us (85.1 %)
+
+                          count    sum
+exec neff   core why                  
+8    af65d7 0    cc          22  168.3
+                 corebar      6   12.7
+                 dma         22   64.7
+                 entry        1    1.5
+            1    cc          20  149.2
+                 corebar      1    1.6
+                 dma         20   46.1
+                 exit         1    1.9
+9    787f53 0    cc          34  269.3
+                 corebar     13   22.9
+                 dma         40  103.6
+            1    cc          36  288.9
+                 dma         45  125.2
+                 entry        1    8.1
+                 exit         1    1.8
+10   484ce3 0    cc          24  160.5
+                 corebar     10   17.9
+                 dma         25   55.2
+            1    cc          24  162.9
+                 corebar      9   20.3
+                 dma         23   69.7
+                 entry        1    6.5
+                 exit         1    2.0
+11   ca4943 0    cc           9   90.4
+                 dma         62  119.5
+            1    cc           5   55.1
+                 dma         36   60.1
+                 entry        1   11.1
+                 exit         1    2.0
+
+largest gaps not covered by a collective / core barrier / pending DMA:
+Empty DataFrame
+Columns: [exec, neff, core, start_us, dur_us, why, detail]
+Index: []

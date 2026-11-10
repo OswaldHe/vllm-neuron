@@ -1,0 +1,49 @@
+ranks: [0, 7, 8, 15, 16, 23, 24, 31]
+
+exec 8 af65d7: 21 collectives
+  rank  exec_us  busy%  in_cc_us  waiting_for_later_rank_us  last_to_arrive
+     0   2237.3   84.8     463.7                      132.2     0
+     7   2238.1   86.0     399.5                       68.0     2
+     8   2238.3   85.0     458.6                      127.1     2
+    15   2237.4   86.4     387.6                       56.1     5
+    16   2238.3   85.1     456.7                      125.1     4
+    23   2236.9   85.6     408.0                       76.5     2
+    24   2239.3   86.1     431.1                       99.5     0
+    31   2237.0   87.4     363.5                       32.0     6
+  largest arrival spreads (us, collective #, op, last rank): [(34.3, 1, 'ALLREDUCE', 15), (32.9, 0, 'BARRIER', 31), (32.8, 12, 'ALLREDUCE', 31), (6.4, 14, 'ALLREDUCE', 15), (5.7, 13, 'ALLREDUCE', 23)]
+
+exec 9 787f53: 38 collectives
+  rank  exec_us  busy%  in_cc_us  waiting_for_later_rank_us  last_to_arrive
+     0   4075.8   87.8     706.7                      126.5     3
+     7   4061.6   88.3     645.0                       64.8     6
+     8   4076.1   87.3     724.8                      144.6     4
+    15   4062.0   87.5     666.7                       86.4     5
+    16   4076.7   87.1     738.6                      158.4     3
+    23   4062.2   87.3     684.7                      104.5     5
+    24   4075.8   87.3     723.2                      142.9     2
+    31   4063.3   87.7     670.1                       89.8    10
+  largest arrival spreads (us, collective #, op, last rank): [(35.7, 0, 'BARRIER', 15), (29.6, 33, 'ALLREDUCE', 0), (7.4, 20, 'ALLREDUCE', 8), (6.7, 26, 'ALLREDUCE', 15), (6.7, 22, 'ALLREDUCE', 15)]
+
+exec 10 484ce3: 38 collectives
+  rank  exec_us  busy%  in_cc_us  waiting_for_later_rank_us  last_to_arrive
+     0   3894.7   90.7     664.1                      114.4     0
+     7   3878.3   91.2     590.0                       40.3    10
+     8   3895.8   90.8     672.6                      122.9     0
+    15   3878.2   91.0     599.1                       49.4     7
+    16   3896.1   91.1     654.2                      104.4     7
+    23   3880.4   91.0     603.0                       53.2     5
+    24   3895.9   90.7     671.4                      121.7     2
+    31   3878.0   91.4     589.6                       39.9     7
+  largest arrival spreads (us, collective #, op, last rank): [(34.3, 0, 'BARRIER', 15), (7.3, 14, 'ALLREDUCE', 7), (6.3, 32, 'ALLREDUCE', 16), (6.2, 21, 'ALLREDUCE', 16), (6.1, 27, 'ALLREDUCE', 23)]
+
+exec 11 ca4943: 14 collectives
+  rank  exec_us  busy%  in_cc_us  waiting_for_later_rank_us  last_to_arrive
+     0   1492.6   83.8     413.6                      179.5     0
+     7   1492.1   85.4     252.1                       18.0     5
+     8   1493.0   83.6     418.4                      184.3     0
+    15   1492.5   85.5     267.8                       33.8     4
+    16   1489.2   83.9     399.9                      165.9     1
+    23   1491.8   85.1     244.1                       10.0     3
+    24   1492.5   83.8     408.7                      174.6     0
+    31   1493.0   85.1     258.5                       24.4     1
+  largest arrival spreads (us, collective #, op, last rank): [(35.4, 3, 'ALLREDUCE', 7), (30.2, 0, 'BARRIER', 15), (25.9, 2, 'ALLREDUCE', 23), (24.2, 1, 'ALLGATHER', 7), (17.4, 7, 'ALLREDUCE', 23)]

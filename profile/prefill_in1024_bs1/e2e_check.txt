@@ -1,0 +1,54 @@
+== client side, prefill window
+   request latency (max_tokens=1, = TTFT) 257.1 ms
+== device profile ds41_8d_in1024_bs1_prefill_rank00: 46 NEFF executions, span 243.88 ms
+ execution_index                             neff_name    ms  gap_before_ms
+               0 ca53775a6db20da876e3ffc389b365f5.neff 2.152            NaN
+               1 c514e8881cb67db37b3b7aa99ba6c0f9.neff 0.082          1.658
+               2 e74b3ae7267d273a7862dc964afe61e3.neff 3.958          3.477
+               3 b6d58618a03b01eaa6e8e76adbf37619.neff 7.428          4.439
+               4 c42e365626578fbdee6cc51d39578aae.neff 6.346          3.193
+               5 4d477800207b84fce15c7c28f63d1658.neff 5.520          2.802
+               6 4d477800207b84fce15c7c28f63d1658.neff 5.337          0.566
+               7 4d477800207b84fce15c7c28f63d1658.neff 5.496          0.010
+               8 4d477800207b84fce15c7c28f63d1658.neff 5.397          0.006
+               9 4d477800207b84fce15c7c28f63d1658.neff 5.304          0.009
+              10 c42e365626578fbdee6cc51d39578aae.neff 6.704          0.109
+              11 4d477800207b84fce15c7c28f63d1658.neff 5.360          0.106
+              12 4d477800207b84fce15c7c28f63d1658.neff 5.290          0.006
+              13 4d477800207b84fce15c7c28f63d1658.neff 5.372          0.006
+              14 4d477800207b84fce15c7c28f63d1658.neff 5.367          0.006
+              15 4d477800207b84fce15c7c28f63d1658.neff 5.340          0.006
+              16 a32b5be1338409d864a1e7e5e19de558.neff 9.469          0.111
+              17 4d477800207b84fce15c7c28f63d1658.neff 5.395          0.106
+              18 4d477800207b84fce15c7c28f63d1658.neff 5.335          0.006
+              19 4d477800207b84fce15c7c28f63d1658.neff 5.365          0.011
+              20 4d477800207b84fce15c7c28f63d1658.neff 5.520          0.008
+              21 4d477800207b84fce15c7c28f63d1658.neff 5.540          0.006
+              22 84e574eb05dbd3c13c07cbb37cdeacb2.neff 6.113          0.109
+              23 3625bc0b9513762e2325889b6d96e7e2.neff 5.115          0.034
+              24 3625bc0b9513762e2325889b6d96e7e2.neff 5.181          0.006
+              25 3625bc0b9513762e2325889b6d96e7e2.neff 5.155          0.005
+              26 1b88a6390cf7cf6e6c69b6f3e70c52dc.neff 5.750          0.034
+              27 3625bc0b9513762e2325889b6d96e7e2.neff 5.215          0.034
+              28 3625bc0b9513762e2325889b6d96e7e2.neff 5.167          0.005
+              29 3625bc0b9513762e2325889b6d96e7e2.neff 5.150          0.006
+              30 1b88a6390cf7cf6e6c69b6f3e70c52dc.neff 5.842          0.034
+              31 3625bc0b9513762e2325889b6d96e7e2.neff 5.321          0.050
+              32 3625bc0b9513762e2325889b6d96e7e2.neff 4.987          0.042
+              33 3625bc0b9513762e2325889b6d96e7e2.neff 5.017          0.006
+              34 1b88a6390cf7cf6e6c69b6f3e70c52dc.neff 5.618          0.035
+              35 3625bc0b9513762e2325889b6d96e7e2.neff 5.189          0.035
+              36 3625bc0b9513762e2325889b6d96e7e2.neff 5.148          0.006
+              37 3625bc0b9513762e2325889b6d96e7e2.neff 5.051          0.006
+              38 1b88a6390cf7cf6e6c69b6f3e70c52dc.neff 5.820          0.034
+              39 ca8f73077b87a282422d4aaa9bc90d27.neff 5.254          0.034
+              40 ca8f73077b87a282422d4aaa9bc90d27.neff 5.099          0.006
+              41 ca8f73077b87a282422d4aaa9bc90d27.neff 5.169          0.006
+              42 d6761a1d33f36c0a15a7144fe8ba3d76.neff 1.104          0.040
+              43 ee9b1d92ee23c72b42ac287969da1369.neff 0.054          0.024
+              44 c4c3fdb0e83e699e3dad791b230f14fc.neff 0.021          0.031
+              45 4a1c5a71af88a067188239e9e2831771.neff 1.947          0.045
+== system trace ds41_8d_in1024_bs1_prefill_rank00@latest: 44 launches (nc_exec_running), sum 224.42 ms, first start to last end 241.86 ms
+   launch ms: [2.15, 0.01, 3.95, 7.43, 6.34, 5.52, 5.33, 5.49, 5.39, 5.3, 6.7, 5.36, 5.29, 5.37, 5.36, 5.34, 9.47, 5.39, 5.33, 5.36, 5.52, 5.54, 6.11, 5.11, 5.18, 5.15, 5.75, 5.21, 5.16, 5.15, 5.84, 5.32, 4.98, 5.01, 5.62, 5.19, 5.15, 5.05, 5.82, 5.25, 5.1, 5.17, 1.09, 0.05]
+   start-to-start of every 4th launch (decode: one step): [26.4, 26.1, 23.0, 21.5, 25.7, 22.44, 21.38, 21.61, 20.89, 21.35]
+   gap us: [1675, 3543, 4446, 3193, 2808, 584, 13, 9, 11, 111, 109, 9, 8, 9, 8, 114, 108, 9, 13, 11, 9, 112, 36, 8, 8, 37, 36, 8, 8, 36, 53, 44, 8, 37, 36, 8, 8, 37, 37, 8, 8, 42, 34]

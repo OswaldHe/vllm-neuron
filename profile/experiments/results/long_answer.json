@@ -1,0 +1,116 @@
+{
+ "essay": {
+  "ttft_ms": 434.9777710158378,
+  "total_s": 10.983987608924508,
+  "ntok": 2000,
+  "overall_tok_s": 189.49645802930632,
+  "windows": [
+   {
+    "tokens": "1-256",
+    "tok_s": 170.15247024027298,
+    "step_ms": 12.543660821393132,
+    "tok_per_step": 2.1794871794871793
+   },
+   {
+    "tokens": "257-512",
+    "tok_s": 177.32616237420797,
+    "step_ms": 12.36802781932056,
+    "tok_per_step": 2.2
+   },
+   {
+    "tokens": "513-768",
+    "tok_s": 188.69906042265973,
+    "step_ms": 12.267365935258567,
+    "tok_per_step": 2.3181818181818183
+   },
+   {
+    "tokens": "769-1024",
+    "tok_s": 175.869924100232,
+    "step_ms": 12.247019447386265,
+    "tok_per_step": 2.152542372881356
+   },
+   {
+    "tokens": "1025-1280",
+    "tok_s": 205.09584709895583,
+    "step_ms": 12.237216113135219,
+    "tok_per_step": 2.514851485148515
+   },
+   {
+    "tokens": "1281-1536",
+    "tok_s": 206.23949706173792,
+    "step_ms": 12.15844799298793,
+    "tok_per_step": 2.52
+   },
+   {
+    "tokens": "1537-1792",
+    "tok_s": 206.37291478176027,
+    "step_ms": 12.163778999820352,
+    "tok_per_step": 2.515151515151515
+   },
+   {
+    "tokens": "1793-2048",
+    "tok_s": 192.70520840324264,
+    "step_ms": 12.230549938976765,
+    "tok_per_step": 2.4069767441860463
+   }
+  ],
+  "text": "# From the Abacus to the Data Center: A History of Computing\n\n## Introduction\n\nThe history of computing is not, as it is sometimes told, a story that begins with the transistor or the silicon chip. It is a story that begins with the human hand, with counting, with the desire to record and manipulate quantities that exceed memory and fingers. For thousands of years, computation was a physical and mechanical affair\u2014stones, knots, rods, gears\u2014and only in the last century did it become electrical, then electronic, then digital, and finally networked on a planetary scale. What follows is an attempt to trace that arc: from the earliest counting devices of Mesopotamia and China, through the mechanical calculators of the Renaissance and Enlightenment, through the great theoretical breakthroughs of the nineteenth and early twentieth centuries, through the wartime and Cold War crucibles that produced the first true computers, and finally into the era of personal computing, the internet, and the vast, humming data centers that now underpin modern civilization.\n\nThe through-line is a set of recurring problems: how to represent numbers, how to automate arithmetic, how to store and retrieve information, how to make machines faster and smaller, and how to connect them. Each era solved some of these problems and created new ones. The result is a history that is as much about ideas\u2014logic, abstraction, algorithms\u2014as it is about hardware.\n\n## Part I: Counting Before Machines\n\n### The Abacus and the First Computational Tools\n\nThe earliest computational aids were not machines in any modern sense but extensions of the body. Tally sticks, knotted cords (such as the Inca *quipu*), and counting stones all served to externalize memory. The English word \"calculate\" derives from the Latin *calculus*, meaning \"pebble\"\u2014a reminder that computation began as the manipulation of small physical objects.\n\nThe abacus, in its various forms, was the first device to organize those objects into a structured system. Babylonian and Egyptian counting boards predate the Common Era, but the abacus reached its most sophisticated early form in China, where the *suanpan* appeared by roughly the second century CE, and in Japan, where the *soroban* was refined centuries later. These devices used beads sliding on rods to represent digits, with a decimal (or sometimes mixed) positional system. A skilled operator could add, subtract, multiply, and divide with remarkable speed\u2014so fast, in fact, that in the 1940s a Japanese *soroban* operator famously outperformed an American soldier with an electromechanical calculator in a contest of arithmetic.\n\nThe abacus embodies a profound idea: that computation can be separated from the thing being computed. The beads do not represent sheep or coins; they represent numbers, and the rules for moving them are rules of arithmetic. This abstraction is the seed of all later computing.\n\n### Positional Notation and the Algorithm\n\nNo device could have been as powerful as it was without a good notation. The Hindu\u2013Arabic numeral system, which reached Europe through the Islamic world in the Middle Ages, provided positional decimal notation and the concept of zero. This was not merely a convenience; it made arithmetic systematic and teachable. The word \"algorithm\" itself comes from the Latinized name of the ninth-century Persian mathematician al-Khw\u0101rizm\u012b, whose treatises on arithmetic and algebra introduced these methods to a wider world.\n\nWith positional notation came the possibility of mechanical automation. If arithmetic is a set of rules applied to symbols, then a machine that manipulates symbols according to rules can do arithmetic. This insight would take centuries to realize fully, but it was the conceptual foundation.\n\n## Part II: The Mechanical Age\n\n### Early Mechanical Calculators\n\nThe seventeenth century saw the first serious attempts to build calculating machines. In 1623, Wilhelm Schickard, a German professor, designed a \"calculating clock\" that could add and subtract; it was destroyed in a fire during the Thirty Years' War, and its significance was only recognized centuries later. In 1642, Blaise Pascal, then a teenager, built a mechanical calculator to help his father with tax computations. The Pascaline used geared wheels to add and subtract and was a marvel of craftsmanship, though expensive and limited.\n\nGottfried Wilhelm Leibniz, the German philosopher and mathematician, went further. In the 1670s he designed a machine that could not only add and subtract but also multiply and divide, using a stepped drum mechanism (the \"Leibniz wheel\") that would be used in calculators for centuries. Leibniz was also a visionary of notation: he dreamed of a *characteristica universalis*, a universal symbolic language, and he developed binary arithmetic\u2014the base-2 system that would eventually become the native language of digital computers. In a remarkable passage, he noted that binary calculation could be performed by \"a certain machine\" and that it was \"beneath the dignity of such an excellent man [as the mathematician] to spend hours in drudgery\" when machines could do the work.\n\n### The Industrial Revolution and the Difference Engine\n\nThe nineteenth century brought the Industrial Revolution and with it the ambition to mechanize not just arithmetic but entire processes. Charles Babbage, an English mathematician and inventor, is the pivotal figure here. Frustrated by errors in mathematical tables used for navigation and engineering, Babbage conceived of the Difference Engine in the 1820s: a machine that would compute polynomial functions by the method of finite differences and print the results, eliminating human error.\n\nThe Difference Engine was never completed in Babbage's lifetime\u2014the engineering tolerances required were beyond the manufacturing capabilities of the era, and the project consumed enormous sums\u2014but it was a brilliant design. More importantly, Babbage went on to conceive the Analytical Engine, a general-purpose programmable computer. The Analytical Engine was to have a \"store\" (memory), a \"mill\" (processor), and instructions provided on punched cards, an idea borrowed from the Jacquard loom, which used punched cards to control weaving patterns. It would have been capable of conditional branching and loops\u2014the essential features of a modern computer.\n\nBabbage's collaborator, Ada Lovelace, wrote extensive notes on the Analytical Engine, including what is often considered the first computer program: an algorithm for computing Bernoulli numbers. Lovelace also articulated a deeper vision, suggesting that the machine might manipulate symbols of any kind, not just numbers, and that it could \"compose elaborate and scientific pieces of music.\" She is rightly celebrated as the first programmer and one of the first to grasp the general-purpose potential of computing.\n\n### Punched Cards and Data Processing\n\nWhile Babbage's machines remained unrealized, the punched-card idea found practical application in the United States. Herman Hollerith, an engineer working for the U.S. Census Bureau, developed a system of punched cards and electromechanical tabulators to process the 1890 census. The previous census (1880) had taken years to tabulate; Hollerith's system reduced the time dramatically. His company eventually became the Computing-Tabulating-Recording Company, which in 1924 was renamed International Business Machines\u2014IBM.\n\nFor the first half of the twentieth century, punched-card tabulation was the dominant form of \"data processing\" in business and government. It was not general-purpose computing, but it established the infrastructure\u2014cards, readers, sorters, tabulators\u2014that would later be adapted to electronic computers.\n\n## Part III: The Theoretical Foundations\n\n### Boolean Logic and the Algebra of Thought\n\nIn parallel with mechanical developments, a theoretical revolution was underway. In 1854, the English mathematician George Boole published *An Investigation of the Laws of Thought*, in which he showed that logical propositions could be expressed in algebraic form. Boole's algebra used two values\u2014true and false, or 1 and 0\u2014and operations like AND, OR, and NOT. This \"Boolean algebra\" seemed at the time a purely abstract curiosity. But it would become the mathematical foundation of digital circuit design.\n\nIn 1937, Claude Shannon, then a graduate student at MIT, wrote a master's thesis showing that Boolean algebra could be used to analyze and design electrical switching circuits. This was a conceptual leap of enormous consequence: it meant that logic could be implemented in hardware, and that any logical function could be built from simple switches. Shannon's thesis has been called the most important master's thesis of the twentieth century.\n\n### Turing and the Universal Machine\n\nThe other great theoretical breakthrough came from Alan Turing. In 1936, Turing, a young British mathematician, published a paper on the *Entscheidungsproblem* (decision problem) posed by David Hilbert. Turing imagined an abstract machine\u2014now called a Turing machine\u2014consisting of an infinite tape, a read/write head, and a finite set of rules. He showed that some problems are undecidable: no such machine can solve them.\n\nBut the paper's deeper legacy was the concept of the *universal* Turing machine: a machine that can simulate any other Turing machine. This is the theoretical basis of the general-purpose computer. A single machine, given the right instructions, can perform any computation that any other machine can perform. The modern computer is, in essence, a universal Turing machine realized in silicon.\n\nTuring's work was complemented by that of Alonzo Church, Kurt G\u00f6del, and others, who together established the foundations of computability theory. By the late 1930s, the intellectual groundwork for the digital computer was largely in place. What remained was to build one.\n\n## Part IV: The Electronic Revolution\n\n### Wartime Computing\n\nWorld War II provided the urgency and the resources. In Britain, Turing worked at Bletchley Park on breaking the German Enigma cipher. The codebreaking effort produced a series of elect"
+ },
+ "code": {
+  "ttft_ms": 434.653467964381,
+  "total_s": 5.4886690359562635,
+  "ntok": 2000,
+  "overall_tok_s": 395.527076066025,
+  "windows": [
+   {
+    "tokens": "1-256",
+    "tok_s": 318.18482747904676,
+    "step_ms": 12.589716003276408,
+    "tok_per_step": 4.048387096774194
+   },
+   {
+    "tokens": "257-512",
+    "tok_s": 374.9830920292328,
+    "step_ms": 12.329575140029192,
+    "tok_per_step": 4.636363636363637
+   },
+   {
+    "tokens": "513-768",
+    "tok_s": 466.2128427979502,
+    "step_ms": 12.33260310254991,
+    "tok_per_step": 5.744186046511628
+   },
+   {
+    "tokens": "769-1024",
+    "tok_s": 391.6211814911157,
+    "step_ms": 12.272226042114198,
+    "tok_per_step": 4.8076923076923075
+   },
+   {
+    "tokens": "1025-1280",
+    "tok_s": 406.9304152763055,
+    "step_ms": 12.232291046530008,
+    "tok_per_step": 4.980392156862745
+   },
+   {
+    "tokens": "1281-1536",
+    "tok_s": 407.082787225132,
+    "step_ms": 12.252225773409009,
+    "tok_per_step": 5.0
+   },
+   {
+    "tokens": "1537-1792",
+    "tok_s": 401.35674893292787,
+    "step_ms": 12.225255835801363,
+    "tok_per_step": 4.921568627450981
+   },
+   {
+    "tokens": "1793-2048",
+    "tok_s": 432.73480954877766,
+    "step_ms": 12.17458094470203,
+    "tok_per_step": 5.3076923076923075
+   }
+  ],
+  "text": "# In-Memory Key-Value Store with TTL and LRU Eviction\n\nBelow is a complete Python module implementing a small in-memory key-value store with TTL support, LRU eviction, a command parser, and unit tests.\n\n```python\n\"\"\"\nkvstore.py\n\nA small in-memory key-value store with:\n  - TTL (time-to-live) support per key\n  - LRU (least-recently-used) eviction when capacity is exceeded\n  - A simple command parser (Redis-like syntax)\n  - Comprehensive unit tests\n\nAuthor: (your name)\nLicense: MIT\n\"\"\"\n\nfrom __future__ import annotations\n\nimport threading\nimport time\nfrom collections import OrderedDict\nfrom dataclasses import dataclass, field\nfrom typing import Any, Callable, Dict, Iterable, List, Optional, Tuple\n\n\n# ---------------------------------------------------------------------------\n# Exceptions\n# ---------------------------------------------------------------------------\n\nclass KVStoreError(Exception):\n    \"\"\"Base class for all KV store errors.\"\"\"\n\n\nclass KeyNotFoundError(KVStoreError):\n    \"\"\"Raised when a key is not present in the store.\"\"\"\n\n\nclass InvalidCommandError(KVStoreError):\n    \"\"\"Raised when a command cannot be parsed or is malformed.\"\"\"\n\n\nclass InvalidArgumentError(KVStoreError):\n    \"\"\"Raised when a command argument is invalid.\"\"\"\n\n\n# ---------------------------------------------------------------------------\n# Entry\n# ---------------------------------------------------------------------------\n\n@dataclass\nclass Entry:\n    \"\"\"A single value stored in the KV store.\"\"\"\n\n    value: Any\n    expires_at: Optional[float] = None  # monotonic timestamp, or None for no expiry\n\n    def is_expired(self, now: Optional[float] = None) -> bool:\n        if self.expires_at is None:\n            return False\n        if now is None:\n            now = time.monotonic()\n        return now >= self.expires_at\n\n\n# ---------------------------------------------------------------------------\n# Core store\n# ---------------------------------------------------------------------------\n\nclass KVStore:\n    \"\"\"\n    An in-memory key-value store with TTL and LRU eviction.\n\n    Parameters\n    ----------\n    capacity:\n        Maximum number of keys to hold. When exceeded, the least-recently-used\n        key is evicted. Must be >= 1.\n    clock:\n        A callable returning the current time (monotonic seconds). Defaults to\n        ``time.monotonic``. Useful for deterministic tests.\n    \"\"\"\n\n    def __init__(\n        self,\n        capacity: int = 128,\n        clock: Callable[[], float] = time.monotonic,\n    ) -> None:\n        if capacity < 1:\n            raise ValueError(\"capacity must be >= 1\")\n        self._capacity = capacity\n        self._clock = clock\n        self._data: \"OrderedDict[str, Entry]\" = OrderedDict()\n        self._lock = threading.RLock()\n\n    # -- introspection ------------------------------------------------------\n\n    @property\n    def capacity(self) -> int:\n        return self._capacity\n\n    def __len__(self) -> int:\n        with self._lock:\n            self._purge_expired()\n            return len(self._data)\n\n    def __contains__(self, key: str) -> bool:\n        with self._lock:\n            entry = self._data.get(key)\n            if entry is None:\n                return False\n            if entry.is_expired(self._clock()):\n                del self._data[key]\n                return False\n            return True\n\n    def keys(self) -> List[str]:\n        with self._lock:\n            self._purge_expired()\n            return list(self._data.keys())\n\n    def items(self) -> List[Tuple[str, Any]]:\n        with self._lock:\n            self._purge_expired()\n            return [(k, e.value) for k, e in self._data.items()]\n\n    # -- core operations ----------------------------------------------------\n\n    def set(self, key: str, value: Any, ttl: Optional[float] = None) -> None:\n        \"\"\"\n        Set ``key`` to ``value``.\n\n        Parameters\n        ----------\n        ttl:\n            Time-to-live in seconds. ``None`` means no expiry. Must be > 0.\n        \"\"\"\n        if not isinstance(key, str):\n            raise InvalidArgumentError(\"key must be a string\")\n        if ttl is not None:\n            if not isinstance(ttl, (int, float)):\n                raise InvalidArgumentError(\"ttl must be a number\")\n            if ttl <= 0:\n                raise InvalidArgumentError(\"ttl must be > 0\")\n\n        with self._lock:\n            now = self._clock()\n            expires_at = None if ttl is None else now + float(ttl)\n\n            # If key already exists, remove it so we can re-insert at the end\n            # (most-recently-used position).\n            if key in self._data:\n                del self._data[key]\n\n            self._data[key] = Entry(value=value, expires_at=expires_at)\n            self._data.move_to_end(key)\n\n            # Evict LRU entries until we're within capacity.\n            self._purge_expired(now)\n            while len(self._data) > self._capacity:\n                self._data.popitem(last=False)\n\n    def get(self, key: str, default: Any = None) -> Any:\n        \"\"\"Return the value for ``key`` or ``default`` if missing/expired.\"\"\"\n        with self._lock:\n            entry = self._data.get(key)\n            if entry is None:\n                return default\n            if entry.is_expired(self._clock()):\n                del self._data[key]\n                return default\n            # Mark as most-recently-used.\n            self._data.move_to_end(key)\n            return entry.value\n\n    def delete(self, key: str) -> bool:\n        \"\"\"Delete ``key``. Returns True if it existed (and was not expired).\"\"\"\n        with self._lock:\n            entry = self._data.get(key)\n            if entry is None:\n                return False\n            if entry.is_expired(self._clock()):\n                del self._data[key]\n                return False\n            del self._data[key]\n            return True\n\n    def ttl(self, key: str) -> Optional[float]:\n        \"\"\"\n        Return remaining TTL in seconds for ``key``.\n\n        Returns\n        -------\n        - ``None`` if the key does not exist or has no expiry.\n        - A float >= 0 if the key has a TTL.\n        \"\"\"\n        with self._lock:\n            entry = self._data.get(key)\n            if entry is None:\n                return None\n            if entry.expires_at is None:\n                return None\n            now = self._clock()\n            if entry.is_expired(now):\n                del self._data[key]\n                return None\n            return max(0.0, entry.expires_at - now)\n\n    def expire(self, key: str, ttl: float) -> bool:\n        \"\"\"Set a new TTL on an existing key. Returns True on success.\"\"\"\n        if ttl <= 0:\n            raise InvalidArgumentError(\"ttl must be > 0\")\n        with self._lock:\n            entry = self._data.get(key)\n            if entry is None:\n                return False\n            now = self._clock()\n            if entry.is_expired(now):\n                del self._data[key]\n                return False\n            entry.expires_at = now + float(ttl)\n            self._data.move_to_end(key)\n            return True\n\n    def persist(self, key: str) -> bool:\n        \"\"\"Remove the TTL from ``key``. Returns True on success.\"\"\"\n        with self._lock:\n            entry = self._data.get(key)\n            if entry is None:\n                return False\n            if entry.is_expired(self._clock()):\n                del self._data[key]\n                return False\n            entry.expires_at = None\n            self._data.move_to_end(key)\n            return True\n\n    def clear(self) -> None:\n        with self._lock:\n            self._data.clear()\n\n    def incr(self, key: str, amount: int = 1) -> int:\n        \"\"\"Increment an integer value. Creates the key with value ``amount``.\"\"\"\n        with self._lock:\n            current = self.get(key, default=0)\n            if not isinstance(current, int) or isinstance(current, bool):\n                raise InvalidArgumentError(\"value is not an integer\")\n            new_value = current + amount\n            # Preserve TTL if the key exists.\n            entry = self._data.get(key)\n            ttl_remaining: Optional[float] = None\n            if entry is not None and entry.expires_at is not None:\n                ttl_remaining = max(0.0, entry.expires_at - self._clock())\n            self.set(key, new_value, ttl=ttl_remaining)\n            return new_value\n\n    # -- internals ----------------------------------------------------------\n\n    def _purge_expired(self, now: Optional[float] = None) -> int:\n        \"\"\"Remove all expired entries. Returns the number removed.\"\"\"\n        if now is None:\n            now = self._clock()\n        expired = [k for k, e in self._data.items() if e.is_expired(now)]\n        for k in expired:\n            del self._data[k]\n        return len(expired)\n\n\n# ---------------------------------------------------------------------------\n# Command parser\n# ---------------------------------------------------------------------------\n\nclass CommandParser:\n    \"\"\"\n    Parses simple Redis-like commands and executes them against a KVStore.\n\n"
+ }
+}

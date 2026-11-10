@@ -1,0 +1,22 @@
+2026-11-10 04:58:38,173 - WARNING - runtime.py:70 - Defaulting to PJRT_DEVICE=CPU
+2026-11-10 04:58:38,341 - INFO - complex_decomposition.py:119 - Registered ComplexTensor new_full rule.
+INFO 11-10 04:58:38 [__init__.py:52] Available plugins for group vllm.platform_plugins:
+INFO 11-10 04:58:38 [__init__.py:54] - neuron -> vllm_neuron:register
+INFO 11-10 04:58:38 [__init__.py:57] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 11-10 04:58:38 [__init__.py:272] Platform plugin neuron is activated
+2026-11-10 04:58:38,540 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 04:58:38,540 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 04:58:40,174 - INFO - __init__.py:184 - deepseek_v41: 32 rank(s) — applied the measured multi-rank host environment {'NEURON_RT_INSPECT_ENABLE': '0', 'NEURON_RT_INSPECT_PRECACHE_ENABLE': '0', 'NEURON_RT_IO_RING_CACHE_SIZE': '1', 'MALLOC_ARENA_MAX': '2', 'MALLOC_TRIM_THRESHOLD_': '131072', 'MALLOC_TOP_PAD_': '131072', 'NEURON_HOST_MEM_PER_RANK_GIB': '20.0', 'VLLM_NEURON_SHM_READER_SPIN_PATCH': '0', 'NEURON_RT_XU_COMPUTE_MAX_QUEUED_REQUESTS': '128'}; see __init__.py for what each is worth
+2026-11-10 04:58:40,177 - WARNING - __init__.py:403 - deepseek_v41: islpy 2026.2.2 is newer than the 2026.1 neuronx-cc 2.27 was validated against. If compiles fail with '[NCC_ISMP902] Simplifier error: is_subset()', that is why, and it is not the graph — pin islpy==2026.1. See deepseek_v41.warn_on_unsupported_islpy
+[04:58:40] serve: /opt/aws_neuronx_venv_pytorch_inference_vllm_0_29_0_1_2_0/bin/python -m performance._serve_main --model /mnt/nvme/hf --served-model-name deepseek-v41-flash --tensor-parallel-size 32 --pipeline-parallel-size 1 --max-model-len 768 --max-num-seqs 1 --port 8361 --no-enable-prefix-caching --additional-config {"neuron_profiler": {"activities": ["device_profile", "system_profile"], "neuron_cores": [0, 31], "output_dir": "/home/ubuntu/vllm-neuron/profile/decode_in512_bs1/capture/output", "sys_trace_max_events_per_nc": 1000000}} --profiler-config {"profiler": "cuda", "delay_iterations": 0, "max_iterations": 4}
+[transformers] DeepseekV41TextConfig got `key=rope_scaling` in kwargs but hasn't set it as attribute. For RoPE standardization you need to set `self.rope_parameters` in model's config. 
+[transformers] DeepseekV41TextConfig got `key=rope_scaling` in kwargs but hasn't set it as attribute. For RoPE standardization you need to set `self.rope_parameters` in model's config. 
+bench:   still waiting for the server (7200 s left)
+bench: server healthy after 105 s
+[05:00:26] warm-up 0: 1 x 512 -> 192
+[05:05:00] warm-up prefill-only pass
+[transformers] DeepseekV41TextConfig got `key=rope_scaling` in kwargs but hasn't set it as attribute. For RoPE standardization you need to set `self.rope_parameters` in model's config. 
+[05:05:06] decode window closed
+[05:05:07] done
+bench: stopping server
+[05:05:13] server stopped

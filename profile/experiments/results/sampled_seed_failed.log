@@ -1,0 +1,26 @@
+2026-11-10 06:02:11,872 - WARNING - runtime.py:70 - Defaulting to PJRT_DEVICE=CPU
+2026-11-10 06:02:12,023 - INFO - complex_decomposition.py:119 - Registered ComplexTensor new_full rule.
+INFO 11-10 06:02:12 [__init__.py:52] Available plugins for group vllm.platform_plugins:
+INFO 11-10 06:02:12 [__init__.py:54] - neuron -> vllm_neuron:register
+INFO 11-10 06:02:12 [__init__.py:57] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 11-10 06:02:12 [__init__.py:272] Platform plugin neuron is activated
+2026-11-10 06:02:12,184 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 06:02:12,184 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 06:02:13,628 - INFO - __init__.py:184 - deepseek_v41: 32 rank(s) — applied the measured multi-rank host environment {'NEURON_RT_INSPECT_ENABLE': '0', 'NEURON_RT_INSPECT_PRECACHE_ENABLE': '0', 'NEURON_RT_IO_RING_CACHE_SIZE': '1', 'MALLOC_ARENA_MAX': '2', 'MALLOC_TRIM_THRESHOLD_': '131072', 'MALLOC_TOP_PAD_': '131072', 'NEURON_HOST_MEM_PER_RANK_GIB': '20.0', 'VLLM_NEURON_SHM_READER_SPIN_PATCH': '0', 'NEURON_RT_XU_COMPUTE_MAX_QUEUED_REQUESTS': '128'}; see __init__.py for what each is worth
+2026-11-10 06:02:13,630 - WARNING - __init__.py:403 - deepseek_v41: islpy 2026.2.2 is newer than the 2026.1 neuronx-cc 2.27 was validated against. If compiles fail with '[NCC_ISMP902] Simplifier error: is_subset()', that is why, and it is not the graph — pin islpy==2026.1. See deepseek_v41.warn_on_unsupported_islpy
+[06:02:13] engine sampled: devices 0-31 port 8321 ctx 1280 pid 4074743
+bench:   still waiting for the server (3600 s left)
+bench: server healthy after 95 s
+[06:03:48] engine sampled: healthy after 95 s
+[06:06:22] code      T=0.0:  218 tok  392.9 tok/s step 12.60 ms acc 81.4% tok/step 5.05 TTFT 100
+[06:06:22] code      T=0.0:  218 tok  395.7 tok/s step 12.56 ms acc 81.4% tok/step 5.05 TTFT 81
+[06:06:22] code      T=0.0:  218 tok  396.3 tok/s step 12.61 ms acc 81.4% tok/step 5.05 TTFT 81
+[06:06:22] engine sampled: stopped
+Traceback (most recent call last):
+  File "/home/ubuntu/vllm-neuron/profile/experiments/sampled.py", line 12, in <module>
+    rs = [ask(8321, p, 256, temperature=temp, seed=1 + i if temp else None) for i in range(4)]
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/vllm-neuron/profile/experiments/content_sweep.py", line 57, in ask
+    return {"prompt_tokens": ptok, "ntok": n, "ttft_ms": (ts[0] - t0) * 1000, "total_s": ts[-1] - t0,
+                                                          ~~^^^
+IndexError: list index out of range

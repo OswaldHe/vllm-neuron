@@ -1,0 +1,106 @@
+window: execs 8-11 = 11938.1 us; low DMA = under 40 GB/s for >= 4 us
+core 0: 1743 MB, mean 146 GB/s over the window
+core 1: 1495 MB, mean 125 GB/s over the window
+
+low-DMA time by cause (us) per launch and core:
+why               between launches  collective  compute  core barrier  dma latency  idle  launch entry  sync wait
+exec neff   core                                                                                                 
+8.0  af65d7 0                 75.0       280.0    610.0           0.0         35.0   0.0          38.0      188.0
+            1                 75.0       235.0    791.0          70.0         37.0   0.0          50.0      174.0
+9.0  787f53 0                 74.0       440.0    869.0         120.0         15.0   0.0          69.0      286.0
+            1                 74.0       458.0   1136.0         137.0         82.0   0.0          75.0      248.0
+10.0 484ce3 0                 88.0       460.0    752.0          15.0         23.0   0.0          71.0      317.0
+            1                 88.0       411.0    999.0          18.0         59.0   5.0          74.0      291.0
+11.0 ca4943 0                  0.0       209.0    315.0          96.0          5.0   0.0          21.0      311.0
+            1                  0.0       191.0    303.0         158.0          0.0   0.0          82.0      289.0
+
+low-DMA time by cause, whole window (us):
+                       count     sum
+core why                            
+0    between launches      5   386.0
+     collective           81  1389.0
+     compute             230  2546.0
+     core barrier         11   231.0
+     dma latency          10    78.0
+     launch entry          8   199.0
+     sync wait            52  1102.0
+1    between launches      4   387.0
+     collective           77  1295.0
+     compute             246  3229.0
+     core barrier         24   383.0
+     dma latency          26   178.0
+     idle                  1     5.0
+     launch entry         16   281.0
+     sync wait            42  1002.0
+
+low-DMA time inside launches by the function doing most of the work then (us, top 25):
+core                              0      1     tot
+main                                              
+b1attn.py:mx_gemm             528.0  530.0  1058.0
+b1moe.py:moe                  144.0  861.0  1005.0
+b1moe.py:moe.down_term        365.0  549.0   914.0
+(compiler)                    554.0  312.0   866.0
+b1attn.py:attn_side           157.0  482.0   639.0
+b1.py:hc_mix                  511.0  118.0   629.0
+b1.py:block.gated             151.0  379.0   530.0
+draft_seq.py:draft_body       226.0  223.0   449.0
+b1idx.py:topk_tables          119.0  178.0   297.0
+b1.py:hc_out_pre              177.0   29.0   206.0
+b1src.py:compress              58.0  116.0   174.0
+moe_tp.py:route_group         112.0   58.0   170.0
+mk_common.py:hc_out_spread     68.0   94.0   162.0
+mk_common.py:hc_in_mix          0.0  135.0   135.0
+mk_common.py:attn_rows_dense   55.0   67.0   122.0
+b1eng.py:readout               49.0   64.0   113.0
+mk_mx.py:interleave_rows       70.0   42.0   112.0
+step_kernel.py:_tt             62.0   28.0    90.0
+mk_compress.py:_gemm_ct        44.0   45.0    89.0
+b1.py:sinkhorn_gen.coldiv      25.0   48.0    73.0
+b1.py:load_stream              54.0   16.0    70.0
+mk_mx.py:gemm                  55.0   13.0    68.0
+b1.py:hc_out_fin               23.0   44.0    67.0
+mk_common.py:sum_squares       66.0    0.0    66.0
+moe_tp.py:_up                  30.0   31.0    61.0
+
+largest low-DMA stretches:
+ core  exec  start_ms    us              why  work_us  dmas_issued  mean_GBps                       waits_on                                                                       top
+    1  11.0    50.216 212.0        sync wait   72.456           32      1.596    {'sync': 397469, '?': 4891}                draft_seq.py:draft_body 91.7, mk_compress.py:_gemm_ct 34.2
+    0  11.0    50.219 208.0        sync wait   95.357           43      1.923    {'sync': 197706, '?': 4986}               draft_seq.py:draft_body 112.5, mk_compress.py:_gemm_ct 23.4
+    1   NaN    38.340 150.0 between launches   13.933            6      0.284    {'sync': 357888, '?': 5131}                              draft_seq.py:draft_body 20.3, (compiler) 0.0
+    1   8.0    38.662 125.0        sync wait   70.685           43      2.759   {'sync': 21450, 'dma': 4313}                          b1attn.py:mx_gemm 25.8, b1attn.py:attn_side 21.0
+    0   NaN    38.394  96.0 between launches    0.059            0      0.010                             {}                                                            (compiler) 0.1
+    0  10.0    48.847  88.0 between launches    0.406            0      0.211                             {}                                                            (compiler) 0.4
+    1  10.0    48.847  88.0 between launches    0.000            0      0.000        {'sync': 3368, '?': 62}                                                                          
+    1   8.0    40.727  75.0 between launches    0.000            0      0.000          {'sync': 56, '?': 13}                                                                          
+    0   8.0    40.727  75.0 between launches    0.154            0      0.048                             {}                                                            (compiler) 0.2
+    1   9.0    44.878  74.0 between launches    0.000            0      0.000                      {'?': 13}                                                                          
+    0   9.0    44.878  74.0 between launches    0.065            0      0.006                             {}                                                            (compiler) 0.1
+    1   9.0    42.479  70.0     core barrier   61.254           16      1.959   {'sync': 33606, 'dma': 3872}                                 b1src.py:compress 25.2, b1.py:hc_mix 21.3
+    0   9.0    40.802  69.0     launch entry   37.710          112      5.015  {'sync': 272140, 'dma': 5149}                                   b1.py:load_stream 16.2, (compiler) 10.3
+    0  10.0    44.952  67.0     launch entry   34.915           97      5.030 {'sync': 281570, 'dma': 21701}                                   b1.py:load_stream 16.2, (compiler) 10.4
+    1  11.0    49.280  65.0       collective   46.027           23      4.017    {'dma': 5475, 'sync': 5421} mk_common.py:hc_out_spread 14.0, mk_common.py:_sinkhorn_fused.coldiv 12.4
+    0   8.0    38.744  61.0          compute   50.216            4      2.688     {'sync': 5760, 'dma': 759}                                 (compiler) 24.3, b1attn.py:attn_side 19.6
+    0   8.0    38.644  57.0       collective   14.254           38      3.921     {'dma': 7905, 'sync': 634}                                b1.py:_block 6.7, b1attn.py:freqs_rows 4.1
+    1   8.0    40.543  56.0          compute   35.976            2      3.516    {'dma': 1206, 'sync': 1113}                          b1attn.py:attn_side 14.2, b1attn.py:mx_gemm 14.0
+    0  11.0    49.628  56.0     core barrier   20.121           31      6.227   {'sync': 89766, 'dma': 6464}                        mk_common.py:hc_out_spread 14.0, mk_mx.py:gemm 9.7
+    1   8.0    39.425  55.0          compute   39.928            1      1.858     {'sync': 1098, 'dma': 832}                          b1attn.py:attn_side 19.9, b1attn.py:mx_gemm 13.9
+    0   NaN    38.340  53.0 between launches   28.307            9      1.122    {'sync': 192899, '?': 5229}                              draft_seq.py:draft_body 34.9, (compiler) 0.9
+    1  11.0    49.067  53.0       collective    0.240            0      0.766               {'sync': 156552}    draft_seq.py:draft_body 0.2, draft_seq.py:draft_body.main_x_finish 0.1
+    0  11.0    49.288  52.0       collective   13.557           19      4.016  {'sync': 85284, 'dma': 13120}                                           mk_common.py:hc_out_spread 14.4
+    1  11.0    49.630  52.0          compute   42.662           19      4.628    {'sync': 3474, 'dma': 2512} mk_common.py:hc_out_spread 14.4, mk_common.py:_sinkhorn_fused.coldiv 12.6
+    0   8.0    39.098  50.0          compute   38.083            7      4.328    {'sync': 5106, 'dma': 1386}                          b1attn.py:mx_gemm 14.1, b1attn.py:attn_side 13.5
+    1  10.0    44.974  49.0     launch entry   35.489          102      6.433  {'sync': 76690, 'dma': 21806}                                    b1.py:load_stream 16.2, (compiler) 8.8
+    0  10.0    45.155  49.0          compute   45.727           13      5.162    {'sync': 4974, 'dma': 1239}                                 (compiler) 21.9, b1attn.py:attn_side 15.3
+    0   9.0    42.493  49.0     core barrier   43.723            4      1.493  {'sync': 102969, 'dma': 1108}                          b1src.py:compress 11.9, b1attn.py:norm_stage 9.0
+    1   9.0    40.824  47.0     launch entry   34.640          101      6.645  {'sync': 72119, 'dma': 21578}                                    b1.py:load_stream 16.2, (compiler) 8.4
+    0   8.0    39.438  47.0        sync wait   18.957            9      3.676   {'sync': 41505, 'dma': 1224}                              b1attn.py:mx_gemm 14.2, b1.py:hc_out_pre 5.4
+    0   8.0    39.783  46.0       collective   10.901            5      2.340                             {}                       b1.py:hc_out_pre 5.9, b1.py:sinkhorn_gen.coldiv 3.2
+    1  10.0    48.802  45.0        sync wait   14.434            0      1.144    {'sync': 288907, '?': 3976}           mk_compress.py:_gemm_ct 38.6, head_kernel.py:_argmax_split 11.5
+    1   8.0    38.613  45.0     core barrier   19.764           42      3.755   {'sync': 78686, 'dma': 2371}                                  b1.py:_block 6.7, step_kernel.py:_tt 4.6
+    0  10.0    47.005  44.0          compute   40.797            3      4.655    {'dma': 1922, 'sync': 1101}                                 (compiler) 19.6, b1attn.py:attn_side 14.9
+    0   9.0    41.056  44.0        sync wait   23.739           14      4.723    {'sync': 21480, 'dma': 949}                                    (compiler) 11.0, b1attn.py:mx_gemm 6.2
+    0  10.0    48.803  44.0        sync wait   18.131            0      1.916    {'sync': 138663, '?': 4105}           mk_compress.py:_gemm_ct 23.9, head_kernel.py:_argmax_split 13.2
+    0  10.0    47.656  44.0          compute   41.584           17      6.795    {'dma': 1223, 'sync': 1083}                                   (compiler) 25.7, b1attn.py:mx_gemm 13.9
+    0  10.0    47.935  44.0          compute   35.120           17      6.640    {'dma': 2679, 'sync': 1206}                          b1attn.py:attn_side 15.3, b1attn.py:mx_gemm 14.0
+    1   8.0    39.219  43.0          compute   32.705           19      3.831  {'sync': 84187, 'dma': 13148}                              (compiler) 20.4, b1moe.py:moe.down_term 10.0
+    0  11.0    49.970  42.0       collective   14.188           20      3.841   {'sync': 74649, 'dma': 1719}                        mk_common.py:hc_out_spread 13.4, mk_mx.py:gemm 2.8

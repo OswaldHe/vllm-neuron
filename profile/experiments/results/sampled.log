@@ -1,0 +1,33 @@
+2026-11-10 06:07:42,238 - WARNING - runtime.py:70 - Defaulting to PJRT_DEVICE=CPU
+2026-11-10 06:07:42,390 - INFO - complex_decomposition.py:119 - Registered ComplexTensor new_full rule.
+INFO 11-10 06:07:42 [__init__.py:52] Available plugins for group vllm.platform_plugins:
+INFO 11-10 06:07:42 [__init__.py:54] - neuron -> vllm_neuron:register
+INFO 11-10 06:07:42 [__init__.py:57] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 11-10 06:07:42 [__init__.py:272] Platform plugin neuron is activated
+2026-11-10 06:07:42,551 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 06:07:42,551 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 06:07:43,984 - INFO - __init__.py:184 - deepseek_v41: 32 rank(s) — applied the measured multi-rank host environment {'NEURON_RT_INSPECT_ENABLE': '0', 'NEURON_RT_INSPECT_PRECACHE_ENABLE': '0', 'NEURON_RT_IO_RING_CACHE_SIZE': '1', 'MALLOC_ARENA_MAX': '2', 'MALLOC_TRIM_THRESHOLD_': '131072', 'MALLOC_TOP_PAD_': '131072', 'NEURON_HOST_MEM_PER_RANK_GIB': '20.0', 'VLLM_NEURON_SHM_READER_SPIN_PATCH': '0', 'NEURON_RT_XU_COMPUTE_MAX_QUEUED_REQUESTS': '128'}; see __init__.py for what each is worth
+2026-11-10 06:07:43,986 - WARNING - __init__.py:403 - deepseek_v41: islpy 2026.2.2 is newer than the 2026.1 neuronx-cc 2.27 was validated against. If compiles fail with '[NCC_ISMP902] Simplifier error: is_subset()', that is why, and it is not the graph — pin islpy==2026.1. See deepseek_v41.warn_on_unsupported_islpy
+[06:07:44] engine sampled: devices 0-31 port 8321 ctx 1280 pid 4087900
+bench:   still waiting for the server (3600 s left)
+bench: server healthy after 95 s
+[06:09:19] engine sampled: healthy after 95 s
+[06:11:53] code      T=0.0:  218 tok  394.8 tok/s step 12.57 ms acc 81.4% tok/step 5.05 TTFT 93
+[06:11:53] code      T=0.0:  218 tok  396.5 tok/s step 12.53 ms acc 81.4% tok/step 5.05 TTFT 81
+[06:11:53] code      T=0.0:  218 tok  397.0 tok/s step 12.57 ms acc 81.4% tok/step 5.05 TTFT 82
+[06:14:36] code      T=0.7:  210 tok  188.8 tok/s step 24.99 ms acc 73.3% tok/step 4.75 TTFT 97
+[06:14:36] code      T=0.7:  185 tok  213.7 tok/s step 24.97 ms acc 85.7% tok/step 5.41 TTFT 89
+[06:14:36] code      T=0.7:  221 tok  183.0 tok/s step 24.85 ms acc 72.1% tok/step 4.58 TTFT 85
+[06:14:41] explain   T=0.0:  256 tok  232.7 tok/s step 12.54 ms acc 39.3% tok/step 2.97 TTFT 86
+[06:14:41] explain   T=0.0:  256 tok  232.6 tok/s step 12.55 ms acc 39.3% tok/step 2.97 TTFT 99
+[06:14:41] explain   T=0.0:  256 tok  231.4 tok/s step 12.56 ms acc 39.3% tok/step 2.97 TTFT 87
+[06:14:50] explain   T=0.7:  256 tok  123.7 tok/s step 24.79 ms acc 42.2% tok/step 3.07 TTFT 102
+[06:14:50] explain   T=0.7:  256 tok  123.9 tok/s step 24.62 ms acc 41.4% tok/step 3.07 TTFT 90
+[06:14:50] explain   T=0.7:  256 tok  122.4 tok/s step 24.71 ms acc 41.0% tok/step 3.04 TTFT 94
+[06:14:57] creative  T=0.0:  256 tok  168.4 tok/s step 12.45 ms acc 22.5% tok/step 2.12 TTFT 96
+[06:14:57] creative  T=0.0:  256 tok  167.6 tok/s step 12.51 ms acc 22.5% tok/step 2.12 TTFT 86
+[06:14:57] creative  T=0.0:  256 tok  168.3 tok/s step 12.50 ms acc 22.5% tok/step 2.12 TTFT 83
+[06:15:09] creative  T=0.7:  256 tok   80.2 tok/s step 24.57 ms acc 19.5% tok/step 1.98 TTFT 96
+[06:15:09] creative  T=0.7:  256 tok   85.9 tok/s step 24.62 ms acc 22.8% tok/step 2.12 TTFT 105
+[06:15:09] creative  T=0.7:  256 tok   88.3 tok/s step 24.60 ms acc 23.6% tok/step 2.18 TTFT 99
+[06:15:10] engine sampled: stopped

@@ -1,0 +1,21 @@
+== client side, decode window
+   streamed chunks 66; median gap between chunks outside the profiled window 12.05 ms (n=54); TTFT 152 ms
+== device profile ds41_8d_in512_bs1_decode_rank00: 12 NEFF executions, span 41.26 ms
+ execution_index                             neff_name    ms  gap_before_ms
+               0 63f9020ebe1a22e0252f0a8a8efaef2f.neff 7.531            NaN
+               1 bdccc3b8d4ca4ff1059946bb9dbe92a1.neff 4.047          0.073
+               2 83e2a500225a5f1df5bba1669001d9fc.neff 3.896          0.075
+               3 acd429f87c420ae8543e61085f0c5fdc.neff 1.493          0.088
+               4 63f9020ebe1a22e0252f0a8a8efaef2f.neff 2.270          0.096
+               5 bdccc3b8d4ca4ff1059946bb9dbe92a1.neff 4.048          0.074
+               6 83e2a500225a5f1df5bba1669001d9fc.neff 3.892          0.074
+               7 acd429f87c420ae8543e61085f0c5fdc.neff 1.490          0.088
+               8 63f9020ebe1a22e0252f0a8a8efaef2f.neff 2.239          0.095
+               9 bdccc3b8d4ca4ff1059946bb9dbe92a1.neff 4.075          0.075
+              10 83e2a500225a5f1df5bba1669001d9fc.neff 3.892          0.074
+              11 acd429f87c420ae8543e61085f0c5fdc.neff 1.490          0.090
+   start-to-start of the first NEFF (one decode step each): [17.3, 12.03] ms
+== system trace ds41_8d_in512_bs1_decode_rank00@latest: 16 launches (nc_exec_running), sum 51.98 ms, first start to last end 53.22 ms
+   launch ms: [7.53, 4.05, 3.9, 1.49, 2.27, 4.05, 3.89, 1.49, 2.24, 4.07, 3.89, 1.49, 2.21, 4.04, 3.89, 1.49]
+   start-to-start of every 4th launch (decode: one step): [17.3, 12.03, 12.03]
+   gap us: [74, 75, 88, 97, 75, 74, 88, 96, 75, 74, 90, 96, 77, 75, 89]

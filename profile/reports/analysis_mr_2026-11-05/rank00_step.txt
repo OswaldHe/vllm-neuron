@@ -1,0 +1,222 @@
+
+=== exec 8 af65d7  2237.3 us = compute pieces 1773.5 + collectives 463.7 (21); core-0 work 1490.4, PE 691.5
+ seg  start_us  compute_us  work0  work1   pe  act  dve  pool   sp            member                 func     cc_op  cc_bytes  cc_ranks  cc_us
+   0       0.0        14.0    3.2    2.5  1.7  1.3  1.3   1.2  2.2        (compiler)        (TENSOR_LOAD)   BARRIER       0.0       0.0   58.6
+   1      72.5        82.1   65.5   53.2  0.8  0.4 21.8  53.9  2.6         r0_decode         b1.py:consts ALLREDUCE   61440.0      32.0   55.3
+   2     209.9        89.0   71.7   71.5 29.1 12.0 10.2  23.9 16.7         r0_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   14.4
+   3     313.4        96.1   84.3   79.7 46.1 22.4 53.3  24.5 23.5         r0_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   30.0
+   4     439.4        39.0   32.1   28.4  5.5  1.7  1.0   8.2 26.1       r0_e_decode     b1eng.py:readout ALLREDUCE   73728.0      32.0   18.2
+   5     496.6        47.5   26.7   38.6 18.2  3.5  4.2   0.5 14.9       r0_e_decode    b1attn.py:mx_gemm ALLGATHER  393216.0       8.0    8.3
+   6     552.4        89.6   74.0   81.2 30.1 29.4 23.2  17.6  6.8       r0_e_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   14.7
+   7     656.7        97.0   85.0   80.8 43.8 21.9 51.5  22.7 23.8       r0_e_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   17.5
+   8     771.3       120.8  111.3  104.3 34.9 15.5 51.0  44.1 24.6 r2_src_idx_decode    b1attn.py:mx_gemm ALLREDUCE    9216.0       8.0    7.7
+   9     899.7        78.7   50.3   63.7 25.9  7.4 13.0  16.5  2.1 r2_src_idx_decode b1idx.py:topk_tables ALLREDUCE  122880.0       8.0   14.9
+  10     993.4        89.7   79.5   73.0 44.6 21.4 48.7  22.8 23.4 r2_src_idx_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   23.7
+  11    1106.7        79.6   73.8   75.1 37.8 19.5 13.6  28.9 30.2         r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.7
+  12    1200.1        93.0   81.4   77.1 45.0 21.4 49.7  25.2 27.1         r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   45.3
+  13    1338.3        88.4   74.3   82.2 37.0 14.3 13.3  25.1 33.1         r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   16.9
+  14    1443.7        95.6   81.2   75.7 46.0 21.5 48.1  24.7 23.9         r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   23.4
+  15    1562.7        84.6   79.3   73.3 35.8 13.7 13.2  41.7 38.2         r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.1
+  16    1662.3        92.5   81.4   75.7 44.6 21.6 48.5  24.7 23.9         r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   17.8
+  17    1772.6        89.6   76.8   83.0 36.3 14.5 13.8  27.5 30.4         r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.2
+  18    1877.5        95.9   84.4   78.7 43.9 22.0 50.6  24.2 24.4         r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   20.1
+  19    1993.5        95.8   78.4   81.6 36.7 13.5 13.6  38.4 11.6         r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.1
+  20    2104.4        95.7   83.4   76.8 45.6 22.8 48.2  25.6 22.3         r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   17.8
+  21    2218.0        19.3   12.3   10.7  1.9  0.6  1.0   7.8  2.0         r2_decode     b1.py:hc_out_fin       NaN       NaN       NaN    NaN
+  core-0 work by NKI function (top 15 of 215):
+member                                func                     
+r2_decode                             b1.py:block.gated            166.7
+(compiler)                            (collective microcode)       143.4
+r2_decode                             b1moe.py:moe                  89.1
+layers_decode_pro_embed_L00_L07_tp32  moe_tp.py:route_group         68.5
+r2_decode                             b1attn.py:mx_gemm             66.5
+                                      b1attn.py:attn_side           61.5
+r2_src_idx_decode                     b1.py:block.gated             52.7
+layers_decode_pro_embed_L00_L07_tp32  step_kernel.py:_tt            40.2
+r2_decode                             b1.py:hc_out_pre              38.2
+                                      b1.py:sinkhorn_gen.coldiv     35.5
+                                      b1moe.py:moe.down_term        34.2
+                                      b1.py:sinkhorn_gen.rowdiv     31.6
+r0_e_decode                           b1eng.py:readout              28.6
+r2_decode                             b1moe.py:moe.swiglu_slot      27.0
+r0_e_decode                           b1attn.py:mx_gemm             22.9
+
+=== exec 9 787f53  4075.8 us = compute pieces 3369.1 + collectives 706.7 (38); core-0 work 2854.7, PE 1406.7
+ seg  start_us  compute_us  work0  work1   pe  act  dve  pool   sp                 member                 func     cc_op  cc_bytes  cc_ranks  cc_us
+   0       0.0        36.0    7.1    4.0  1.5  2.4  1.9   1.1  5.5             (compiler)        (TENSOR_LOAD)   BARRIER       0.0       0.0   63.3
+   1      99.3        94.9   77.4   77.7 23.0 15.7 48.0  25.3 19.4   l0/r2_src_idx_decode    b1attn.py:mx_gemm ALLREDUCE    9216.0       8.0   11.8
+   2     206.0        76.4   59.6   60.4 26.1  8.1 12.2  24.8  4.6   l0/r2_src_idx_decode b1idx.py:topk_tables ALLREDUCE  122880.0       8.0   14.5
+   3     296.9        98.6   84.9   76.6 46.5 21.7 51.6  25.4 23.5   l0/r2_src_idx_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   20.0
+   4     415.6        76.7   68.6   71.5 35.6 13.4 14.1  29.2 19.7           l0/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   14.1
+   5     506.4        94.6   83.2   78.6 45.5 21.4 48.8  23.8 22.2           l0/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   22.3
+   6     623.3        86.1   80.2   74.2 36.3 13.8 12.7  41.5 34.0           l0/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.4
+   7     724.8        94.6   81.8   75.8 46.6 21.4 48.2  24.1 23.4           l0/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   26.6
+   8     845.9        83.9   64.5   79.1 37.0 13.5 13.6  20.0 12.9           l0/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.2
+   9     945.0       101.3   87.0   77.7 46.6 30.3 48.5  28.2 24.9           l0/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   19.5
+  10    1065.9        87.4   82.0   73.5 38.0 14.0 13.4  38.9 17.4           l0/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.5
+  11    1166.8        94.9   81.5   76.2 45.7 22.4 48.8  23.2 25.7           l0/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   21.6
+  12    1283.3        89.5   81.6   83.1 38.0 13.7 12.9  34.3 18.9           l0/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   14.9
+  13    1387.7        95.4   82.4   76.7 44.2 21.9 48.8  24.1 24.9           l0/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   29.1
+  14    1512.2        23.0   13.7   14.0  1.9  2.3  1.0   9.4  8.6           l0/r2_decode     b1.py:hc_out_fin ALLREDUCE   73728.0      32.0   17.4
+  15    1552.7        54.2   31.6   20.6 17.9  2.9  1.4   1.0 16.5 l0/r2_src_idx_e_decode    b1attn.py:mx_gemm ALLGATHER  393216.0       8.0    8.5
+  16    1615.3       140.8  119.3  104.9 31.4 30.1 54.2  16.5 11.9 l0/r2_src_idx_e_decode    b1src.py:compress ALLREDUCE    9216.0       8.0   13.0
+  17    1769.1        66.6   54.4   53.8 27.2  8.1 12.8  18.5  1.3 l0/r2_src_idx_e_decode b1idx.py:topk_tables ALLREDUCE  122880.0       8.0   15.5
+  18    1851.2        92.1   81.0   75.8 46.3 21.5 47.7  25.8 26.8 l0/r2_src_idx_e_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   25.4
+  19    1968.7        75.1   69.0   69.8 36.4 13.7 13.0  28.7 32.6           l0/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.1
+  20    2058.8        91.2   78.8   73.9 45.0 22.1 47.8  23.7 22.9           l0/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   23.4
+  21    2173.4        95.2   83.4   79.9 37.8 13.6 13.0  45.8 32.6           l1/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   14.5
+  22    2283.1        98.4   83.5   74.9 46.1 21.4 49.7  23.7 23.3           l1/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   22.4
+  23    2403.9        81.5   76.5   75.9 38.1 13.3 13.6  36.1 15.7           l1/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.4
+  24    2500.9        95.0   83.8   77.5 45.0 21.5 49.4  23.0 27.3           l1/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   19.6
+  25    2615.5        94.2   82.8   81.4 36.0 14.2 13.4  39.0 27.4           l1/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   14.8
+  26    2724.5        93.2   80.3   75.0 44.1 21.6 47.4  26.4 22.5           l1/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   24.7
+  27    2842.4        92.3   74.4   81.4 37.1 13.5 13.6  37.8 15.9           l1/r2_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.9
+  28    2948.6        95.8   84.8   78.1 45.7 21.4 52.0  24.2 24.0           l1/r2_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   21.2
+  29    3065.6       100.9   86.2   84.4 31.3 16.2 44.2  39.9 24.2   l1/r1_src_idx_decode    b1attn.py:mx_gemm ALLREDUCE   18432.0       8.0   10.2
+  30    3176.7        65.8   55.2   58.9 27.6  7.5 12.9  19.7  5.3   l1/r1_src_idx_decode b1idx.py:topk_tables ALLREDUCE  122880.0       8.0   14.2
+  31    3256.6        93.2   81.4   77.6 45.2 21.2 48.2  23.1 23.2   l1/r1_src_idx_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   17.7
+  32    3367.4        76.0   69.9   71.0 36.5 13.6 13.9  30.8 15.2           l1/r1_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.9
+  33    3457.4       142.3  105.3  111.1 52.7 31.6 53.7  26.5 26.9           l1/r1_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   18.1
+  34    3617.8        96.4   82.2   82.8 36.6 13.1 13.2  43.8 13.2           l1/r1_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.2
+  35    3729.4        95.2   81.2   73.7 45.7 21.4 48.4  23.6 22.4           l1/r1_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   19.2
+  36    3843.7        87.5   82.8   76.0 37.0 15.4 13.8  44.0 17.1           l1/r1_decode    b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   14.8
+  37    3946.0        93.8   79.4   74.2 45.9 21.3 47.2  24.9 22.0           l1/r1_decode         b1moe.py:moe ALLREDUCE  122880.0      32.0   16.8
+  38    4056.6        19.2   12.3   10.7  1.9  0.6  1.0   7.8  2.0           l1/r1_decode     b1.py:hc_out_fin       NaN       NaN       NaN    NaN
+  core-0 work by NKI function (top 15 of 318):
+member                  func                  
+(compiler)              (collective microcode)    365.8
+l0/r2_decode            b1.py:block.gated         156.3
+l1/r2_decode            b1.py:block.gated         114.1
+l0/r2_decode            b1moe.py:moe              107.9
+l1/r1_decode            b1.py:block.gated          86.3
+l0/r2_decode            b1attn.py:mx_gemm          83.1
+                        b1attn.py:attn_side        80.2
+l1/r2_decode            b1moe.py:moe               71.3
+l1                      moe_tp.py:route_group      63.8
+l0                      moe_tp.py:route_group      62.9
+l1/r2_decode            b1attn.py:attn_side        59.2
+l1/r1_decode            b1moe.py:moe               53.4
+l0/r2_src_idx_e_decode  b1.py:block.gated          52.9
+l1/r2_decode            b1attn.py:mx_gemm          52.8
+l1/r1_src_idx_decode    b1.py:block.gated          47.1
+
+=== exec 10 484ce3  3894.7 us = compute pieces 3230.6 + collectives 664.1 (38); core-0 work 2803.5, PE 1400.3
+ seg  start_us  compute_us  work0  work1   pe  act  dve  pool   sp           member                    func     cc_op  cc_bytes  cc_ranks  cc_us
+   0       0.0        36.2    6.7    3.6  1.5  2.4  1.8   1.1  5.1       (compiler)           (TENSOR_LOAD)   BARRIER       0.0       0.0   53.9
+   1      90.2        60.9   47.2   51.4 18.9  6.3 21.3  18.8 10.6 l0/r1_idx_decode       b1attn.py:mx_gemm ALLREDUCE   18432.0       8.0   17.9
+   2     169.0        65.2   58.4   52.8 27.2  8.1 12.6  20.4  4.9 l0/r1_idx_decode    b1idx.py:topk_tables ALLREDUCE  122880.0       8.0   15.8
+   3     250.0       102.3   87.5   83.1 46.2 20.3 52.7  25.3 24.3 l0/r1_idx_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   18.0
+   4     370.3        79.7   73.0   72.6 37.1 12.9 14.5  27.1 14.2     l0/r1_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.3
+   5     463.3        97.2   87.4   84.9 47.3 21.3 49.9  24.8 21.7     l0/r1_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   20.0
+   6     580.5        88.8   83.5   79.2 38.0 13.4 13.6  40.7 18.3     l0/r1_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.8
+   7     683.1        94.7   85.1   82.1 45.4 21.2 50.0  24.1 22.4     l0/r1_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   19.9
+   8     797.7        81.7   72.4   75.0 37.7 13.3 13.2  25.3 16.5     l0/r1_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.2
+   9     892.7       103.9   92.8   85.3 47.0 21.4 54.6  30.4 24.7     l0/r1_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   20.8
+  10    1017.3        65.9   45.0   52.5 24.7 14.6 12.1  16.2  9.1 l0/r1_idx_decode       b1attn.py:mx_gemm ALLREDUCE   18432.0       8.0   13.1
+  11    1096.3        62.0   56.1   52.9 27.9  8.0 13.2  18.4  4.9 l0/r1_idx_decode    b1idx.py:topk_tables ALLREDUCE  122880.0       8.0   13.1
+  12    1171.5       102.3   88.1   86.3 45.6 21.3 50.8  28.8 23.9 l0/r1_idx_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   19.2
+  13    1292.9        74.0   68.9   67.2 36.9 13.5 13.3  24.4 14.2     l0/r1_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.5
+  14    1382.4       100.2   85.7   79.2 46.9 21.2 50.2  24.5 22.6     l0/r1_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   23.0
+  15    1505.6        85.0   76.3   74.8 37.7 12.5 14.7  28.8 14.5     l0/r1_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.6
+  16    1604.2       100.8   85.6   82.4 45.9 21.0 51.4  25.3 23.9     l0/r1_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   22.6
+  17    1727.6        82.6   78.3   74.6 37.0 13.4 13.6  30.7 19.3     l0/r1_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.0
+  18    1825.2       105.7   90.9   87.9 48.7 21.3 55.1  23.9 25.2     l0/r1_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   17.4
+  19    1948.3        53.5   48.1   48.6 24.5  8.7 12.7  24.3 15.4 l1/r1_idx_decode       b1attn.py:mx_gemm ALLREDUCE   18432.0       8.0   16.3
+  20    2018.1        62.6   56.9   54.1 27.7  7.6 12.7  18.6  5.5 l1/r1_idx_decode    b1idx.py:topk_tables ALLREDUCE  122880.0       8.0   13.8
+  21    2094.5       107.9   95.9   87.3 45.5 23.4 54.6  28.4 23.1 l1/r1_idx_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   19.6
+  22    2222.0        77.8   74.8   72.8 37.4 12.9 12.8  33.1 16.4     l1/r1_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.3
+  23    2315.1        97.6   88.3   84.2 44.7 21.4 53.3  24.5 25.6     l1/r1_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   17.1
+  24    2429.8        78.9   73.9   71.4 36.7 13.0 13.6  34.6 16.1     l1/r1_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.1
+  25    2523.8       100.9   90.8   90.2 47.5 21.2 51.2  27.0 23.6     l1/r1_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   16.6
+  26    2641.4        90.5   86.5   78.1 36.6 13.5 13.4  39.2 17.9     l1/r1_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.8
+  27    2745.7       108.9   95.5   89.4 46.6 21.0 53.6  29.3 25.9     l1/r1_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   17.0
+  28    2871.5        62.3   46.7   49.5 24.5  8.3 13.4  17.5 14.4 l1/r1_idx_decode       b1attn.py:mx_gemm ALLREDUCE   18432.0       8.0   14.1
+  29    2948.0        62.0   55.4   55.3 27.7  7.5 12.6  19.3  4.7 l1/r1_idx_decode    b1idx.py:topk_tables ALLREDUCE  122880.0       8.0   14.5
+  30    3024.5        93.5   80.6   76.8 43.6 21.1 49.3  23.4 23.9 l1/r1_idx_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   17.0
+  31    3135.1        76.7   71.3   71.0 37.9 12.4 13.3  28.1 18.1 l1/r1_tap_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.2
+  32    3227.0        94.5   81.0   78.1 44.4 22.7 47.3  24.6 24.4 l1/r1_tap_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   17.2
+  33    3338.8        88.6   70.1   81.8 37.9 13.1 14.5  25.1 17.7 l1/r1_tap_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   15.6
+  34    3442.9        97.6   83.0   79.1 44.0 21.4 49.9  24.8 22.0 l1/r1_tap_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   18.6
+  35    3559.1        77.6   72.8   70.0 36.9 13.8 13.9  31.8 17.4 l1/r1_tap_decode       b1attn.py:mx_gemm ALLREDUCE  122880.0       8.0   13.5
+  36    3650.2       110.2   96.7   94.2 47.0 21.6 54.7  29.5 24.0 l1/r1_tap_decode            b1moe.py:moe ALLREDUCE  122880.0      32.0   25.2
+  37    3785.6        85.8   62.9   59.1 11.7  8.9 16.9  21.6  8.2          l1/head mk_compress.py:_gemm_ct ALLGATHER    3072.0      32.0    9.3
+  38    3880.7        14.1    3.4    0.2  0.0  0.0  0.7   0.7  2.0       (compiler)                (NOTIFY)       NaN       NaN       NaN    NaN
+  core-0 work by NKI function (top 15 of 234):
+member            func                  
+(compiler)        (collective microcode)    462.5
+l0/r1_decode      b1.py:block.gated         149.4
+                  b1moe.py:moe              108.5
+                  b1attn.py:mx_gemm          87.9
+l1/r1_tap_decode  b1.py:block.gated          86.5
+l0/r1_decode      b1attn.py:attn_side        86.3
+l1/r1_decode      b1.py:block.gated          76.8
+l1/r1_idx_decode  b1.py:block.gated          76.4
+l0                moe_tp.py:route_group      69.8
+l1                moe_tp.py:route_group      66.1
+l1/r1_decode      b1moe.py:moe               56.5
+l1/r1_tap_decode  b1moe.py:moe               53.9
+l0/r1_decode      b1moe.py:moe.down_term     47.4
+l1/r1_decode      b1attn.py:mx_gemm          44.6
+l0/r1_idx_decode  b1idx.py:topk_tables       44.1
+
+=== exec 11 ca4943  1492.6 us = compute pieces 1079.0 + collectives 413.6 (14); core-0 work 734.5, PE 217.1
+ seg  start_us  compute_us  work0  work1   pe  act  dve  pool   sp       member                     func     cc_op  cc_bytes  cc_ranks  cc_us
+   0       0.0        22.7    9.1    6.2  1.5  3.4  6.0   1.1  6.0   (compiler)            (TENSOR_LOAD)   BARRIER       0.0       0.0   56.7
+   1      79.4         8.2    5.8    0.6  0.0  1.1  1.7   3.4  1.0 draft_decode  draft_seq.py:_tail_meta ALLGATHER   61440.0      32.0   30.4
+   2     118.0         2.1    0.0    2.1  0.0  0.0  0.0   0.0  0.0                                       ALLREDUCE   61440.0      32.0   63.4
+   3     183.5       168.4  108.0  118.6 37.6 18.4 57.6  24.8 19.2 draft_decode mk_mx.py:interleave_rows ALLREDUCE  102400.0       8.0   39.5
+   4     391.3       125.3   87.4   95.8 33.5 18.6 28.2  27.9 15.9 draft_decode            moe_tp.py:_up ALLREDUCE  102400.0      32.0   42.9
+   5     559.5       142.9  106.3  107.5 26.9 23.6 52.0  28.2 26.8 draft_decode mk_mx.py:interleave_rows ALLREDUCE  102400.0       8.0   23.9
+   6     726.2       124.9   86.1  101.1 32.3 19.3 29.4  27.8 19.1 draft_decode            moe_tp.py:_up ALLREDUCE  102400.0      32.0   39.7
+   7     890.8       149.8  107.0  110.9 27.5 23.4 51.8  28.2 26.8 draft_decode mk_mx.py:interleave_rows ALLREDUCE  102400.0       8.0   24.2
+   8    1064.8       122.8   88.9   97.6 32.7 19.0 26.5  26.8 18.0 draft_decode            moe_tp.py:_up ALLREDUCE  102400.0      32.0   32.9
+   9    1220.5        91.0   59.7   51.2 12.6 13.2 24.8   7.5 12.0 draft_decode  mk_compress.py:_gemm_ct ALLGATHER   66048.0      32.0   23.1
+  10    1334.6        24.8   15.6   14.0  3.1  2.4  9.0   3.2  0.4 draft_decode  draft_seq.py:draft_body ALLGATHER   66048.0      32.0    8.6
+  11    1368.0        24.8   15.6   13.5  3.5  2.4  9.0   3.1  0.3 draft_decode  draft_seq.py:draft_body ALLGATHER   66048.0      32.0    8.9
+  12    1401.7        25.6   15.5   13.6  3.2  2.4  9.0   3.1  0.3 draft_decode  draft_seq.py:draft_body ALLGATHER   66048.0      32.0    8.8
+  13    1436.1        21.8   13.2   12.8  2.9  2.1  8.4   3.1  0.2 draft_decode  draft_seq.py:draft_body ALLGATHER   66048.0      32.0   10.7
+  14    1468.6        24.0   16.2    0.4  0.0  0.0 12.9   1.4  2.1   (compiler)                 (NOTIFY)       NaN       NaN       NaN    NaN
+  core-0 work by NKI function (top 15 of 58):
+member        func                          
+draft_decode  draft_seq.py:draft_body           111.4
+              mk_common.py:hc_out_spread         86.4
+              mk_common.py:hc_in_norm_spread     84.1
+              mk_mx.py:gemm                      53.5
+              mk_mx.py:interleave_rows           52.8
+              mk_common.py:sum_squares           44.1
+              moe_tp.py:_up                      33.4
+              mk_mx.py:_wdma                     30.9
+              moe_tp.py:route_group              30.2
+              mk_common.py:attn_rows_dense       26.0
+              moe_tp.py:_down_cs                 25.1
+              moe_tp.py:_load_down_half          22.7
+              mk_common.py:bcast_row             22.4
+              moe_tp.py:_swiglu                  18.1
+              moe_tp.py:shared_cs                16.6
+
+=== step summary (execs 8-11, core 0): device 11700.4 us
+compute pieces by the file of their main function (entry = piece before each launch's first collective):
+                pieces  compute_us  work_us   pe_us  act_us  dve_us  pool_us  sp_us
+kind                                                                               
+b1moe.py          40.0      3943.2   3415.7  1832.9   881.6  2013.4   1006.6  959.3
+b1attn.py         41.0      3381.2   2948.2  1388.6   545.1   647.7   1229.3  789.3
+b1idx.py           8.0       539.3    446.4   217.3    62.2   102.0    156.2   33.3
+mk_mx.py           3.0       461.0    321.3    91.9    65.5   161.3     81.2   72.8
+moe_tp.py          3.0       373.0    262.4    98.5    57.0    84.2     82.5   53.0
+mk_compress.py     2.0       176.8    122.6    24.3    22.1    41.7     29.1   20.2
+b1.py              4.0       143.6    103.7     6.5     4.0    24.9     78.9   15.2
+b1src.py           1.0       140.8    119.3    31.4    30.1    54.2     16.5   11.9
+entry              4.0       108.8     26.2     6.1     9.5    11.1      4.4   18.8
+draft_seq.py       5.0       105.3     65.8    12.6    10.5    37.0     16.0    2.3
+b1eng.py           1.0        39.0     32.1     5.5     1.7     1.0      8.2   26.1
+(NOTIFY)           2.0        38.0     19.6     0.0     0.0    13.6      2.1    4.2
+(none)             1.0         2.1      0.0     0.0     0.0     0.0      0.0    0.0
+collectives by op and ranks:
+                    count     sum  median
+cc_op     cc_ranks                       
+ALLGATHER 8.0           2    16.7     8.4
+          32.0          7    99.7     9.3
+ALLREDUCE 8.0          51   776.7    14.8
+          32.0         47  1122.4    20.0
+BARRIER   0.0           4   232.6    57.6
+total: compute pieces 9452.2 us, collectives 2248.1 us

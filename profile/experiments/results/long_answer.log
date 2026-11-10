@@ -1,0 +1,33 @@
+2026-11-10 05:53:04,852 - WARNING - runtime.py:70 - Defaulting to PJRT_DEVICE=CPU
+2026-11-10 05:53:05,046 - INFO - complex_decomposition.py:119 - Registered ComplexTensor new_full rule.
+INFO 11-10 05:53:05 [__init__.py:52] Available plugins for group vllm.platform_plugins:
+INFO 11-10 05:53:05 [__init__.py:54] - neuron -> vllm_neuron:register
+INFO 11-10 05:53:05 [__init__.py:57] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 11-10 05:53:05 [__init__.py:272] Platform plugin neuron is activated
+2026-11-10 05:53:05,239 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 05:53:05,239 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 05:53:07,249 - INFO - __init__.py:184 - deepseek_v41: 32 rank(s) — applied the measured multi-rank host environment {'NEURON_RT_INSPECT_ENABLE': '0', 'NEURON_RT_INSPECT_PRECACHE_ENABLE': '0', 'NEURON_RT_IO_RING_CACHE_SIZE': '1', 'MALLOC_ARENA_MAX': '2', 'MALLOC_TRIM_THRESHOLD_': '131072', 'MALLOC_TOP_PAD_': '131072', 'NEURON_HOST_MEM_PER_RANK_GIB': '20.0', 'VLLM_NEURON_SHM_READER_SPIN_PATCH': '0', 'NEURON_RT_XU_COMPUTE_MAX_QUEUED_REQUESTS': '128'}; see __init__.py for what each is worth
+2026-11-10 05:53:07,251 - WARNING - __init__.py:403 - deepseek_v41: islpy 2026.2.2 is newer than the 2026.1 neuronx-cc 2.27 was validated against. If compiles fail with '[NCC_ISMP902] Simplifier error: is_subset()', that is why, and it is not the graph — pin islpy==2026.1. See deepseek_v41.warn_on_unsupported_islpy
+[05:53:07] engine long: devices 0-31 port 8321 ctx 2304 pid 4048518
+bench:   still waiting for the server (3600 s left)
+bench: server healthy after 100 s
+[05:54:47] engine long: healthy after 100 s
+[06:01:25] essay       1-256:  170.2 tok/s  step 12.54 ms  2.18 tok/step
+[06:01:25] essay     257-512:  177.3 tok/s  step 12.37 ms  2.20 tok/step
+[06:01:25] essay     513-768:  188.7 tok/s  step 12.27 ms  2.32 tok/step
+[06:01:25] essay    769-1024:  175.9 tok/s  step 12.25 ms  2.15 tok/step
+[06:01:25] essay   1025-1280:  205.1 tok/s  step 12.24 ms  2.51 tok/step
+[06:01:25] essay   1281-1536:  206.2 tok/s  step 12.16 ms  2.52 tok/step
+[06:01:25] essay   1537-1792:  206.4 tok/s  step 12.16 ms  2.52 tok/step
+[06:01:25] essay   1793-2048:  192.7 tok/s  step 12.23 ms  2.41 tok/step
+[06:01:25] essay: 2000 tokens in 10.98 s, 189.5 tok/s overall, TTFT 435 ms
+[06:01:38] code        1-256:  318.2 tok/s  step 12.59 ms  4.05 tok/step
+[06:01:38] code      257-512:  375.0 tok/s  step 12.33 ms  4.64 tok/step
+[06:01:38] code      513-768:  466.2 tok/s  step 12.33 ms  5.74 tok/step
+[06:01:38] code     769-1024:  391.6 tok/s  step 12.27 ms  4.81 tok/step
+[06:01:38] code    1025-1280:  406.9 tok/s  step 12.23 ms  4.98 tok/step
+[06:01:38] code    1281-1536:  407.1 tok/s  step 12.25 ms  5.00 tok/step
+[06:01:38] code    1537-1792:  401.4 tok/s  step 12.23 ms  4.92 tok/step
+[06:01:38] code    1793-2048:  432.7 tok/s  step 12.17 ms  5.31 tok/step
+[06:01:38] code: 2000 tokens in 5.49 s, 395.5 tok/s overall, TTFT 435 ms
+[06:01:39] engine long: stopped

@@ -1,0 +1,43 @@
+2026-11-10 05:39:33,921 - WARNING - runtime.py:70 - Defaulting to PJRT_DEVICE=CPU
+2026-11-10 05:39:34,073 - INFO - complex_decomposition.py:119 - Registered ComplexTensor new_full rule.
+INFO 11-10 05:39:34 [__init__.py:52] Available plugins for group vllm.platform_plugins:
+INFO 11-10 05:39:34 [__init__.py:54] - neuron -> vllm_neuron:register
+INFO 11-10 05:39:34 [__init__.py:57] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 11-10 05:39:34 [__init__.py:272] Platform plugin neuron is activated
+2026-11-10 05:39:34,235 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 05:39:34,235 - INFO - port_hold_patch.py:228 - Port-hold patch applied (EADDRINUSE file-rendezvous)
+2026-11-10 05:39:35,779 - INFO - __init__.py:184 - deepseek_v41: 32 rank(s) — applied the measured multi-rank host environment {'NEURON_RT_INSPECT_ENABLE': '0', 'NEURON_RT_INSPECT_PRECACHE_ENABLE': '0', 'NEURON_RT_IO_RING_CACHE_SIZE': '1', 'MALLOC_ARENA_MAX': '2', 'MALLOC_TRIM_THRESHOLD_': '131072', 'MALLOC_TOP_PAD_': '131072', 'NEURON_HOST_MEM_PER_RANK_GIB': '20.0', 'VLLM_NEURON_SHM_READER_SPIN_PATCH': '0', 'NEURON_RT_XU_COMPUTE_MAX_QUEUED_REQUESTS': '128'}; see __init__.py for what each is worth
+2026-11-10 05:39:35,781 - WARNING - __init__.py:403 - deepseek_v41: islpy 2026.2.2 is newer than the 2026.1 neuronx-cc 2.27 was validated against. If compiles fail with '[NCC_ISMP902] Simplifier error: is_subset()', that is why, and it is not the graph — pin islpy==2026.1. See deepseek_v41.warn_on_unsupported_islpy
+[05:39:35] engine nospec: devices 32-63 port 8421 ctx 1280 pid 3980591
+bench:   still waiting for the server (3600 s left)
+bench:   still waiting for the server (3480 s left)
+bench: server healthy after 135 s
+[05:41:50] engine nospec: healthy after 135 s
+[05:45:32] engine nospec: stopped
+Traceback (most recent call last):
+  File "/home/ubuntu/vllm-neuron/profile/experiments/content_sweep.py", line 88, in <module>
+    run(a.port, a.tag)
+  File "/home/ubuntu/vllm-neuron/profile/experiments/content_sweep.py", line 68, in run
+    rs = [ask(port, p, max_tokens) for _ in range(passes)]
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/vllm-neuron/profile/experiments/content_sweep.py", line 42, in ask
+    with urllib.request.urlopen(req, timeout=600) as r:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 500: Internal Server Error

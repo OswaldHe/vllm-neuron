@@ -1,0 +1,290 @@
+[
+ {
+  "prompt_tokens": 25,
+  "ntok": 218,
+  "ttft_ms": 80.65722184255719,
+  "total_s": 0.6272554418537766,
+  "tok_s": 397.0009269249832,
+  "step_ms": 12.549437815323472,
+  "steps": 44,
+  "accept_pct": 81.3953488372093,
+  "tokens_per_step": 5.046511627906977,
+  "text": "```python\ndef merge_sorted(a, b):\n    \"\"\"Merge two sorted lists into one sorted list.\n\n    Args:\n        a: A sorted list.\n        b: A sorted list.\n\n    Returns:\n        A new sorted list containing all elements of a and b.\n    \"\"\"\n    result = []\n    i = j = 0\n    while i < len(a) and j < len(b):\n        if a[i] <= b[j]:\n            result.append(a[i])\n            i += 1\n        else:\n            result.append(b[j])\n            j += 1\n    result.extend(a[i:])\n    result.extend(b[j:])\n    return result\n```\n\nExample usage:\n\n```python\n>>> merge_sorted([1, 3, 5], [2, 4, 6])\n[1, 2, 3, 4, 5, 6]\n```\n\nThis runs in O(n + m) time and O(n + m) space, where `n` and `m` are the lengths of the input lists.",
+  "kind": "code",
+  "prompt": "Write a Python function that merges two sorted lists into one sorted list, with a short docstring.",
+  "first_pass": {
+   "ttft_ms": 175983.19902899675,
+   "tok_s": 1.9668351850646313
+  }
+ },
+ {
+  "prompt_tokens": 22,
+  "ntok": 256,
+  "ttft_ms": 82.08391605876386,
+  "total_s": 0.874784406973049,
+  "tok_s": 321.68517986646884,
+  "step_ms": 12.510852422565222,
+  "steps": 63,
+  "accept_pct": 63.54838709677419,
+  "tokens_per_step": 4.112903225806452,
+  "text": "# Reversing a Singly Linked List in C\n\nHere's a complete implementation that reverses a singly linked list in place using an iterative approach.\n\n## Struct Definition\n\n```c\ntypedef struct Node {\n    int data;\n    struct Node *next;\n} Node;\n```\n\n## Reverse Function\n\n```c\nNode *reverse_list(Node *head)\n{\n    Node *prev = NULL;\n    Node *curr = head;\n    Node *next = NULL;\n\n    while (curr != NULL) {\n        next = curr->next;  /* Save the next node */\n        curr->next = prev;  /* Reverse the link */\n        prev = curr;        /* Advance prev */\n        curr = next;        /* Advance curr */\n    }\n\n    return prev;  /* prev is now the new head */\n}\n```\n\n## How It Works\n\nThe algorithm uses three pointers that walk through the list:\n\n1. **`prev`** \u2014 the node that will become the new `next` for the current node (starts as `NULL` because the original head becomes the new tail).\n2. **`curr`** \u2014 the node currently being processed.\n3. **`next`** \u2014 a temporary pointer to remember the rest of the list before we overwrite `curr",
+  "kind": "code",
+  "prompt": "Write a C function that reverses a singly linked list in place. Include the struct definition.",
+  "first_pass": {
+   "ttft_ms": 1604.4201510958374,
+   "tok_s": 68.86836384270912
+  }
+ },
+ {
+  "prompt_tokens": 42,
+  "ntok": 256,
+  "ttft_ms": 86.4795099478215,
+  "total_s": 0.8685031589120626,
+  "tok_s": 326.077095414873,
+  "step_ms": 12.51713908277452,
+  "steps": 63,
+  "accept_pct": 62.58064516129032,
+  "tokens_per_step": 4.112903225806452,
+  "text": "# Top 5 Customers by Total Order Value in 2024\n\n```sql\nSELECT\n    c.id,\n    c.name,\n    SUM(o.total) AS total_order_value\nFROM customers c\nJOIN orders o\n    ON o.customer_id = c.id\nWHERE o.created_at >= '2024-01-01'\n  AND o.created_at <  '2025-01-01'\nGROUP BY c.id, c.name\nORDER BY total_order_value DESC\nLIMIT 5;\n```\n\n## Notes & Variations\n\n**Why the date range instead of `YEAR(created_at) = 2024`?**\nUsing `>= '2024-01-01' AND < '2025-01-01'` is **sargable** \u2014 it can use an index on `created_at`. Wrapping the column in a function like `YEAR(created_at)` prevents index usage and is slower on large tables.\n\n**If you want to include customers with zero orders** (unlikely for a \"top by value\" query, but for completeness), use a `LEFT JOIN` and `COALESCE`:\n\n```sql\nSELECT\n    c.id,\n    c.name,\n    COALESCE(SUM(o.total",
+  "kind": "code",
+  "prompt": "Write a SQL query that returns the top 5 customers by total order value in 2024 from tables customers(id, name) and orders(id, customer_id, total, created_at).",
+  "first_pass": {
+   "ttft_ms": 1509.9084731191397,
+   "tok_s": 67.42802569731501
+  }
+ },
+ {
+  "prompt_tokens": 36,
+  "ntok": 256,
+  "ttft_ms": 84.02530802413821,
+  "total_s": 0.6572141870856285,
+  "tok_s": 444.8795315385807,
+  "step_ms": 12.621711008250713,
+  "steps": 46,
+  "accept_pct": 93.77777777777777,
+  "tokens_per_step": 5.666666666666667,
+  "text": "[\n  {\n    \"name\": \"Mercury\",\n    \"radius_km\": 2439.7,\n    \"number_of_moons\": 0\n  },\n  {\n    \"name\": \"Venus\",\n    \"radius_km\": 6051.8,\n    \"number_of_moons\": 0\n  },\n  {\n    \"name\": \"Earth\",\n    \"radius_km\": 6371.0,\n    \"number_of_moons\": 1\n  },\n  {\n    \"name\": \"Mars\",\n    \"radius_km\": 3389.5,\n    \"number_of_moons\": 2\n  },\n  {\n    \"name\": \"Jupiter\",\n    \"radius_km\": 69911.0,\n    \"number_of_moons\": 95\n  },\n  {\n    \"name\": \"Saturn\",\n    \"radius_km\": 58232.0,\n    \"number_of_moons\": 146\n  },\n  {\n    \"name\": \"Uranus\",\n    \"radius_km\": 25362.0,\n    \"number_of_moons\": 28\n  },\n  {\n    \"name\": \"Neptune\",\n    \"radius_km\": 246",
+  "kind": "structured",
+  "prompt": "Give me a JSON array of the 8 planets of the solar system with fields name, radius_km, and number_of_moons. Output only JSON.",
+  "first_pass": {
+   "ttft_ms": 1524.3951920419931,
+   "tok_s": 71.60343001455198
+  }
+ },
+ {
+  "prompt_tokens": 30,
+  "ntok": 218,
+  "ttft_ms": 84.14026699028909,
+  "total_s": 0.7164845820516348,
+  "tok_s": 343.16747194753884,
+  "step_ms": 12.459117104299366,
+  "steps": 51,
+  "accept_pct": 67.2,
+  "tokens_per_step": 4.34,
+  "text": "# First 10 Chemical Elements\n\n| Atomic Number | Symbol | Name | Standard Atomic Weight |\n|---------------|--------|------|------------------------|\n| 1 | H | Hydrogen | 1.008 |\n| 2 | He | Helium | 4.0026 |\n| 3 | Li | Lithium | 6.94 |\n| 4 | Be | Beryllium | 9.0122 |\n| 5 | B | Boron | 10.81 |\n| 6 | C | Carbon | 12.011 |\n| 7 | N | Nitrogen | 14.007 |\n| 8 | O | Oxygen | 15.999 |\n| 9 | F | Fluorine | 18.998 |\n| 10 | Ne | Neon | 20.180 |\n\n*Note: Standard atomic weights are given in unified atomic mass units (u) and are based on IUPAC values. Some elements (like Li and B) have interval values due to variations in isotopic composition; the values shown are conventional atomic weights.*",
+  "kind": "structured",
+  "prompt": "Make a markdown table of the first 10 chemical elements with columns: atomic number, symbol, name, standard atomic weight.",
+  "first_pass": {
+   "ttft_ms": 1510.6025750283152,
+   "tok_s": 82.42872790119083
+  }
+ },
+ {
+  "prompt_tokens": 48,
+  "ntok": 85,
+  "ttft_ms": 84.79932718910277,
+  "total_s": 0.27924232301302254,
+  "tok_s": 432.0032184448918,
+  "step_ms": 12.457468081265688,
+  "steps": 16,
+  "accept_pct": 93.33333333333333,
+  "tokens_per_step": 5.6,
+  "text": "The quick brown fox jumps over the lazy dog near the bank of the quiet river, while the sun sets slowly behind the distant blue hills.\n\nThe quick brown fox jumps over the lazy dog near the bank of the quiet river, while the sun sets slowly behind the distant blue hills.\n\nThe quick brown fox jumps over the lazy dog near the bank of the quiet river, while the sun sets slowly behind the distant blue hills.",
+  "kind": "copy",
+  "prompt": "Repeat the following paragraph three times, exactly, with a blank line between copies:\nThe quick brown fox jumps over the lazy dog near the bank of the quiet river, while the sun sets slowly behind the distant blue hills.",
+  "first_pass": {
+   "ttft_ms": 1509.802422951907,
+   "tok_s": 16.180410790916326
+  }
+ },
+ {
+  "prompt_tokens": 48,
+  "ntok": 55,
+  "ttft_ms": 84.62401013821363,
+  "total_s": 0.29249511612579226,
+  "tok_s": 259.7763635472588,
+  "step_ms": 12.479130527935922,
+  "steps": 17,
+  "accept_pct": 48.75,
+  "tokens_per_step": 3.375,
+  "text": "Le comit\u00e9 se r\u00e9unira jeudi pour examiner la proposition de budget, et une d\u00e9cision finale est attendue d'ici la fin du mois. Les membres qui ne peuvent pas y assister doivent envoyer leurs commentaires par \u00e9crit avant la r\u00e9union.",
+  "kind": "translate",
+  "prompt": "Translate into French: 'The committee will meet on Thursday to review the budget proposal, and a final decision is expected by the end of the month. Members who cannot attend should send their comments in writing before the meeting.'",
+  "first_pass": {
+   "ttft_ms": 83.79997196607292,
+   "tok_s": 261.8119591820522
+  }
+ },
+ {
+  "prompt_tokens": 48,
+  "ntok": 29,
+  "ttft_ms": 83.47101602703333,
+  "total_s": 0.2412418939638883,
+  "tok_s": 177.47254985299955,
+  "step_ms": 12.66102003864944,
+  "steps": 13,
+  "accept_pct": 28.333333333333332,
+  "tokens_per_step": 2.3333333333333335,
+  "text": "\u59d4\u5458\u4f1a\u5c06\u4e8e\u5468\u56db\u5f00\u4f1a\u5ba1\u67e5\u9884\u7b97\u63d0\u6848\uff0c\u9884\u8ba1\u6708\u5e95\u524d\u4f5c\u51fa\u6700\u7ec8\u51b3\u5b9a\u3002\u65e0\u6cd5\u51fa\u5e2d\u7684\u6210\u5458\u5e94\u5728\u4f1a\u524d\u4ee5\u4e66\u9762\u5f62\u5f0f\u63d0\u4ea4\u610f\u89c1\u3002",
+  "kind": "translate",
+  "prompt": "Translate into Chinese: 'The committee will meet on Thursday to review the budget proposal, and a final decision is expected by the end of the month. Members who cannot attend should send their comments in writing before the meeting.'",
+  "first_pass": {
+   "ttft_ms": 84.08897998742759,
+   "tok_s": 179.52913295210595
+  }
+ },
+ {
+  "prompt_tokens": 53,
+  "ntok": 256,
+  "ttft_ms": 83.91777006909251,
+  "total_s": 0.8205891828984022,
+  "tok_s": 346.15161598388875,
+  "step_ms": 12.443741434253752,
+  "steps": 59,
+  "accept_pct": 68.27586206896552,
+  "tokens_per_step": 4.396551724137931,
+  "text": "Let's go step-by-step.\n\n---\n\n**Step 1: Define the problem**\n\n- Distance between City A and City B: **300 km**\n- Train 1 leaves City A at **9:00** going toward B at **80 km/h**\n- Train 2 leaves City B at **9:30** going toward A at **100 km/h**\n- They are traveling toward each other on the same track.\n\nWe want the meeting time.\n\n---\n\n**Step 2: Account for the delayed start**\n\nTrain 1 starts at 9:00, Train 2 starts at 9:30.  \nBy 9:30, Train 1 has already traveled for 0.5 hours.\n\nDistance covered by Train 1 in that time:\n\n\\[\n80 \\times 0.5 = 40 \\ \\text{km}\n\\]\n\nSo at 9:30, the remaining distance between the two trains is:\n\n\\[\n300 - 40 = 260 \\ \\text{km}\n\\]\n\n---\n\n**Step 3: Relative speed after 9:30**\n\nAfter 9:30, both trains are moving toward each other:\n\n- Train 1 speed = 80 km/h\n- Train 2 speed = 100 km/h  \n-",
+  "kind": "math",
+  "prompt": "Solve step by step: a train leaves city A at 9:00 at 80 km/h, another leaves city B, 300 km away, at 9:30 at 100 km/h towards A. When do they meet?",
+  "first_pass": {
+   "ttft_ms": 2505.386158125475,
+   "tok_s": 146.80151061919935
+  }
+ },
+ {
+  "prompt_tokens": 36,
+  "ntok": 256,
+  "ttft_ms": 82.41542894393206,
+  "total_s": 0.7250139040406793,
+  "tok_s": 396.8263385026056,
+  "step_ms": 12.468252098187804,
+  "steps": 52,
+  "accept_pct": 80.7843137254902,
+  "tokens_per_step": 5.0,
+  "text": "Alright, let's go through this step-by-step.\n\nWe have:\n\n\\[\nf(x) = x^3 \\cdot \\sin(2x)\n\\]\n\n---\n\n### **Step 1: Identify the rule to use**\nThis is a product of two functions: \\(u = x^3\\) and \\(v = \\sin(2x)\\).  \nWe use the **product rule**:\n\n\\[\nf'(x) = u'v + uv'\n\\]\n\n---\n\n### **Step 2: Differentiate each part**\n- \\(u = x^3 \\Rightarrow u' = 3x^2\\)\n- \\(v = \\sin(2x) \\Rightarrow v' = \\cos(2x) \\cdot 2 = 2\\cos(2x)\\) (chain rule)\n\n---\n\n### **Step 3: Apply the product rule**\n\\[\nf'(x) = (3x^2)(\\sin(2x)) + (x^3)(2\\cos(2x))\n\\]\n\\[\nf'(x) = 3x^2 \\sin(2x) + 2x^3 \\cos(2x)\n\\]\n\n---\n\n### **Step 4: Evaluate at \\(x = \\frac{\\pi}{4}\\)",
+  "kind": "math",
+  "prompt": "Compute the derivative of f(x) = x^3 * sin(2x) and then evaluate it at x = pi/4. Show the steps.",
+  "first_pass": {
+   "ttft_ms": 82.63641595840454,
+   "tok_s": 394.9350279882793
+  }
+ },
+ {
+  "prompt_tokens": 22,
+  "ntok": 256,
+  "ttft_ms": 81.97259111329913,
+  "total_s": 1.1750690280459821,
+  "tok_s": 233.28225340808046,
+  "step_ms": 12.58148904889822,
+  "steps": 87,
+  "accept_pct": 39.30232558139535,
+  "tokens_per_step": 2.9651162790697674,
+  "text": "# How Hash Tables Work\n\n## The Core Idea\n\nA hash table stores key-value pairs in an array. To decide *where* in the array a given key belongs, it runs the key through a **hash function** that converts it into an integer index.\n\n```\nindex = hash(key) % array_size\n```\n\nSo instead of searching through every slot, you compute the location directly.\n\n## Basic Operations\n\n**Insert(key, value):**\n1. Compute `hash(key) % size` \u2192 get an index.\n2. Store the pair at that index.\n\n**Lookup(key):**\n1. Compute the same hash \u2192 same index.\n2. Go directly to that slot and return the value.\n\n**Delete(key):**\n1. Compute the hash, find the slot, remove the entry.\n\n## Collisions\n\nTwo different keys can hash to the same index. This is unavoidable (pigeonhole principle: infinite keys, finite slots). Two common resolutions:\n\n- **Chaining:** Each slot holds a linked list (or tree) of entries. Colliding keys are appended to the list.\n- **Open addressing:** If a slot is taken, probe for the next free slot (linear probing, quadratic probing, double hashing). Lookups follow the same probe sequence",
+  "kind": "explain",
+  "prompt": "Explain how a hash table works and why lookups are O(1) on average.",
+  "first_pass": {
+   "ttft_ms": 83.82691792212427,
+   "tok_s": 232.7870380869201
+  }
+ },
+ {
+  "prompt_tokens": 16,
+  "ntok": 242,
+  "ttft_ms": 81.43311715684831,
+  "total_s": 1.1929718391038477,
+  "tok_s": 216.81655820128182,
+  "step_ms": 12.475588009692729,
+  "steps": 89,
+  "accept_pct": 35.0,
+  "tokens_per_step": 2.7386363636363638,
+  "text": "The seasons are caused primarily by the 23.5-degree tilt of Earth's axis relative to its orbital plane around the Sun. As Earth orbits the Sun over the course of a year, this fixed tilt means different hemispheres receive sunlight at different angles at different times. When the Northern Hemisphere is tilted toward the Sun, sunlight strikes it more directly and spreads over a smaller area, delivering more concentrated energy and producing summer. At the same time, the Southern Hemisphere is tilted away, receiving sunlight at a shallower angle that spreads the same energy over a larger area, resulting in winter. Six months later, the situation reverses.\n\nA common misconception is that seasons are caused by Earth's changing distance from the Sun. In fact, Earth's orbit is nearly circular, and our planet is actually closest to the Sun in early January\u2014during Northern Hemisphere winter. The tilt is what matters, not distance. This tilt also affects day length: the hemisphere tilted toward the Sun experiences longer days, giving the Sun more time to heat the surface, while the hemisphere tilted away has shorter days and longer nights that allow heat to escape. Together, the angle of sunlight and the length of daylight drive the seasonal temperature changes we experience.",
+  "kind": "explain",
+  "prompt": "What causes the seasons on Earth? Answer in two paragraphs.",
+  "first_pass": {
+   "ttft_ms": 3510.3664610069245,
+   "tok_s": 215.51370812425057
+  }
+ },
+ {
+  "prompt_tokens": 10,
+  "ntok": 209,
+  "ttft_ms": 84.02362302877009,
+  "total_s": 1.0075918410439044,
+  "tok_s": 225.21346657750792,
+  "step_ms": 12.508495012298226,
+  "steps": 74,
+  "accept_pct": 37.26027397260274,
+  "tokens_per_step": 2.8493150684931505,
+  "text": "Hello! I'm DeepSeek, an AI assistant created by DeepSeek (\u6df1\u5ea6\u6c42\u7d22). I'm here to help answer your questions, assist with tasks, provide information, and have conversations with you. \n\nI'm a multimodal AI model, which means I can process and understand both text and images that you upload. I can also read files (like PDFs, Word documents, Excel sheets, PowerPoint presentations, and text files) to help you with various tasks.\n\nSome key things about me:\n- I'm **completely free** to use\n- I support **web search** (when you manually enable it)\n- I have a **1M token context window** (I can process very long texts)\n- I'm available via the DeepSeek app and web platform\n- I can handle voice input on the mobile app\n\nIs there anything specific I can help you with today? Whether it's answering questions, brainstorming ideas, analyzing documents, or just having a chat, I'm here to assist! \ud83d\ude0a",
+  "kind": "chat",
+  "prompt": "Hello, who are you?",
+  "first_pass": {
+   "ttft_ms": 1513.8149720150977,
+   "tok_s": 106.95974200375301
+  }
+ },
+ {
+  "prompt_tokens": 22,
+  "ntok": 256,
+  "ttft_ms": 82.11428998038173,
+  "total_s": 1.4061379129998386,
+  "tok_s": 192.5947510048714,
+  "step_ms": 12.457138393074274,
+  "steps": 105,
+  "accept_pct": 29.615384615384617,
+  "tokens_per_step": 2.451923076923077,
+  "text": "April is one of the best times to visit Kyoto \u2014 but also one of the busiest, since it's peak cherry blossom (sakura) season. Here's a curated three-day plan hitting the essentials without overwhelming you.\n\n## Day 1: Eastern Kyoto (Higashiyama)\n\n**Start early** \u2014 this area gets crowded by mid-morning.\n\n- **Kiyomizu-dera** \u2014 iconic hillside temple with a wooden stage overlooking the city. Go at opening (6am).\n- **Sannenzaka & Ninenzaka** \u2014 preserved sloping streets lined with shops and teahouses. Great for photos before crowds arrive.\n- **Kodai-ji** \u2014 quieter temple nearby, lovely in spring.\n- **Yasaka Shrine** \u2192 **Maruyama Park** \u2014 the park is a major sakura spot, with a famous weeping cherry tree lit up at night.\n- **Gion** \u2014 geisha district. Walk Hanamikoji Street in the evening. Be respectful: no chasing or photographing geiko/maiko without permission.\n- **Pontocho Alley** \u2014 narrow dining lane along the Kamo River, perfect for dinner.\n\n## Day 2: Arashiyama + Northwest\n\n- **Ar",
+  "kind": "chat",
+  "prompt": "I am planning a three-day trip to Kyoto in April. What should I not miss?",
+  "first_pass": {
+   "ttft_ms": 94.84392893500626,
+   "tok_s": 192.81912190763288
+  }
+ },
+ {
+  "prompt_tokens": 20,
+  "ntok": 256,
+  "ttft_ms": 87.56808191537857,
+  "total_s": 1.6059813119936734,
+  "tok_s": 167.93847349897715,
+  "step_ms": 12.514321482740343,
+  "steps": 121,
+  "accept_pct": 22.5,
+  "tokens_per_step": 2.125,
+  "text": "The sea had been a grey, churning thing for three days, and Silas was tired of it. He was tired of the salt spray that crusted on his windows, tired of the wind that moaned through the eaves of the lighthouse like a lost soul, and tired of the constant, rhythmic thunder of the waves against the black rocks below. His world had shrunk to the circumference of the light: a single, sweeping beam against an endless, indifferent dark.\n\nHis only companion was the light itself, a great, humming heart of glass and brass that he tended with a devotion usually reserved for living things. He polished its lenses, trimmed its wicks, and wound its great clockwork mechanism. In return, it gave him purpose, a rigid schedule in a life that had otherwise dissolved into the mist.\n\nOn the fourth morning, the storm finally broke. The sky was a pale, washed-out blue, and the sea, though still heaving with a long, rolling swell, had lost its murderous temper. Silas pulled on his oilskins and went down to the shore, a ritual as much a part of his day as lighting the lamp. He was looking for driftwood, perhaps a bit of useful rope, anything the sea had decided to return",
+  "kind": "creative",
+  "prompt": "Write a short story about a lighthouse keeper who finds a message in a bottle.",
+  "first_pass": {
+   "ttft_ms": 4516.096411040053,
+   "tok_s": 101.55289020833338
+  }
+ },
+ {
+  "prompt_tokens": 18,
+  "ntok": 110,
+  "ttft_ms": 88.49075506441295,
+  "total_s": 0.9057585399132222,
+  "tok_s": 133.37121812548196,
+  "step_ms": 12.556653935462236,
+  "steps": 65,
+  "accept_pct": 14.375,
+  "tokens_per_step": 1.703125,
+  "text": "The world was brown and grey and tired,\nOf autumn's gold, and so retired.\nA silence fell, a hush so deep,\nAs if the earth had gone to sleep.\nThen from the sky, a single flake,\nA tiny promise it would make.\nIt danced and swirled, a lonely thing,\nUpon the breath that winter brings.\nThen more came down, a gentle crowd,\nTo wrap the world in a soft shroud.\nThe first true snow, a blanket white,\nHas come to stay, and crown the night.",
+  "kind": "creative",
+  "prompt": "Write a poem of 12 lines about the first snow of winter.",
+  "first_pass": {
+   "ttft_ms": 2552.854753099382,
+   "tok_s": 61.02631656288915
+  }
+ }
+]
