@@ -16,7 +16,6 @@ Compared to GPU, our time to first token is on par with published GPU serving: 0
 
 *Figure 2. Batch-1 time to first token (median TTFT; 1,024-token prompts) for the same runs. It falls from 1,701 ms to 230 ms on 16 devices and is 244 ms on 8 devices; all of the gain comes from prefill kernels.*
 
-**How to read the numbers.** Three metrics appear throughout this blog. **TTFT** (time to first token) is the time from sending a request to receiving its first output token. It is mostly **prefill**, the pass of the model over the whole prompt. **TPOT** (time per output token) is the time a request spends decoding divided by the number of tokens it produced, and 1000 / TPOT is the output speed that one user sees. A **decode step** is one pass of the model during decoding. The model drafts five tokens ahead and verifies them in the next step (speculative decoding, explained in the next section), so one step emits more than one token: about 3.5 on our benchmark prompts. This is why a 12.1 ms step gives a 3.47 ms TPOT. Unless we say otherwise, every number is the median over 8 requests sent one at a time (batch size 1) to a warmed-up server by `vllm bench serve`. The prompts are lines of Shakespeare's sonnets cut to the stated length, every request produces exactly 128 tokens, and decoding is greedy.
 
 ### Table of Content
 
@@ -86,24 +85,6 @@ The deployments we compare, however, are an 8-device Trainium 3 replica and 4 B3
 ## Inference Optimization: Reaching 60x Speedup Over 12 days
 
 We started from the Trainium 2 port of DeepSeek V4.1 Flash, which runs one NKI kernel per operation, and brought it up on a trn3.48xlarge on Oct 22. It decoded at 99.4 ms per token. Over the next two weeks, we optimized it in four directions: using Trainium 3's new hardware features, fusing kernels into megakernels, removing host overhead in vLLM's Neuron backend, and specializing kernels and parallelization for each phase. The table below lists every validated round, and Figure 1 plots them. Per user, decoding became 28.6x faster (99.4 ms to 3.47 ms). Because the final deployment uses half of the devices, output per device grew about 57x. Every row is the same benchmark cell: 512-token prompts, batch size 1, 128 output tokens, and a draft acceptance of 46 to 52% in every round, so the rows differ in step time and not in how many tokens a step emits.
-
-Two terms come up in every section. A **NEFF** is a compiled Neuron executable: one or more kernels compiled into a program for a NeuronCore. A **launch** is one execution of a NEFF, which the host starts on all ranks at the same time. A decode step is a sequence of launches, and much of the work below is about making that sequence shorter.
-
-| Date | Change | TPOT (ms) | Tokens/s per user |
-|---|---|---|---|
-| Oct 22 | Per-op NKI kernels on 16 devices (first working port) | 99.4 | 10 |
-| Oct 23 | One NKI megakernel per transformer block | 73.1 | 14 |
-| Oct 23 | Native MX FP8/FP4 matmul, on-chip key selection, token-grouped experts | 31.6 | 32 |
-| Oct 27 | Agentic-optimized block kernels | 28.3 | 35 |
-| Oct 27 | Eight blocks per launch | 17.7 | 56 |
-| Oct 27 | One RPC per step | 14.8 | 68 |
-| Oct 28 | Direct launch of cached NEFFs | 14.0 | 71 |
-| Oct 30 | Agentic-optimized multi-layer launches | 11.5 | 87 |
-| Oct 30 | Async scheduling with an on-device step prologue | 9.1 | 110 |
-| Oct 31 | Optimized drafter | 7.8 | 128 |
-| Nov 1 | TP8 × EP8 decode MoE | 4.90 | 204 |
-| Nov 2 | On-chip blocks, merged launches, exact rsqrt | 3.77 | 265 |
-| Nov 5 | 8 devices, launches re-tuned on 32 ranks | 3.47 | 288 |
 
 ### Exploit new hardware features in Trainium 3
 
