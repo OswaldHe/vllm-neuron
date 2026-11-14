@@ -543,6 +543,42 @@ def _nki_entry(module: str, name: str = "kernel", grid: int = 0):
     )
 
 
+#: Long contexts: the indexer's `weighted_scores` kernel fails to trace past ~16K
+#: compressed keys (40064 at an 80K context), and the top-k of a segment's scores fails neuronx-cc past ~8.4K columns
+#: (NCC_INAS001 / ISGV902). Both are split along the keys; the results are the same (the scores column by column;
+#: a row's top-k lies in the union of its chunks' top-k).
+_SCORE_KEY_CHUNK = int(os.environ.get("DEEPSEEK_V41_SCORE_KEY_CHUNK", 16384))
+_TOPK_COL_CHUNK = int(os.environ.get("DEEPSEEK_V41_TOPK_COL_CHUNK", 8192))
+
+
+def _chunked_weighted_scores(q: torch.Tensor, keys: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    kernel = _nki_entry("index_score", "weighted_scores")
+    n = keys.shape[0]
+    if n <= _SCORE_KEY_CHUNK:
+        return kernel(q, keys, weights)
+    parts = [
+        kernel(q, keys[c : c + _SCORE_KEY_CHUNK].contiguous(), weights)
+        for c in range(0, n, _SCORE_KEY_CHUNK)
+    ]
+    return torch.cat([p.reshape(p.shape[0], -1) for p in parts], dim=-1)
+
+
+def _chunked_topk(score: torch.Tensor, k: int) -> torch.Tensor:
+    """Indices of the top-`k` along the last axis (as nki_topk(...)[1])."""
+    n = score.shape[-1]
+    if n <= _TOPK_COL_CHUNK or k >= _TOPK_COL_CHUNK:
+        return nki_topk(score, k)[1]
+    values, indices = [], []
+    for c in range(0, n, _TOPK_COL_CHUNK):
+        part = score[..., c : c + _TOPK_COL_CHUNK].contiguous()
+        v, i = nki_topk(part, min(k, part.shape[-1]))
+        values.append(v)
+        indices.append(i.to(torch.int64) + c)
+    candidates = torch.cat(indices, dim=-1)
+    pick = _chunked_topk(torch.cat(values, dim=-1), k)
+    return candidates.gather(-1, pick.to(torch.int64))
+
+
 def nki_topk(tensor: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Top-`k` along the last axis, through this repo's NKI top-k.
 
@@ -1484,13 +1520,29 @@ def host_heap_trim(tag: str, world_size: int) -> None:
     )
 
 
+#: `DEEPSEEK_V41_READ_BUCKETS=n` (default 1): read the smallest of `n` context buckets --
+#: the ceiling, half of it, a quarter, ... -- that holds the live groups, instead of
+#: always the ceiling. Each bucket is its own set of per-layer graphs, compiled and
+#: resident once a request reaches it, so a short context on a long-context engine
+#: scores and selects over its own bucket, and a long prompt's early prefill segments
+#: over smaller ones. 1 keeps the single set at the ceiling.
+_READ_BUCKETS = max(1, int(os.environ.get("DEEPSEEK_V41_READ_BUCKETS", "1")))
+
+
 def _compress_read_len(compress_len: int, ratio: int = 1) -> int:
     """How many compressed groups to read for `compress_len` live ones."""
     if compress_len <= 0:
         return 0
     want = compress_len
     if _COMPRESS_READ_CEILING:
-        want = max(want, -(-_COMPRESS_READ_CEILING // max(ratio, 1)))
+        top = -(-_COMPRESS_READ_CEILING // max(ratio, 1))
+        bucket = top
+        for k in range(1, _READ_BUCKETS):
+            smaller = -(-top // (1 << k))
+            if smaller < want:
+                break
+            bucket = smaller
+        want = max(want, bucket)
     return -(-want // _COMPRESS_TILE) * _COMPRESS_TILE
 
 #: The finite lower bound the reference kernel starts its running max at. A row
@@ -1713,6 +1765,86 @@ def select_candidate_blocks(
     return keep.repeat_interleave(block_size, dim=-1)[..., :width]
 
 
+#: DEEPSEEK_V41_WINDOW_POOL=1: window-layer KV in a shared block pool (see WindowPool) instead of
+#: vLLM's full-context allocation, which does not fit 128K contexts. Off by default.
+WINDOW_POOL = os.environ.get("DEEPSEEK_V41_WINDOW_POOL", "0") == "1"
+
+
+class WindowPool:
+    """Host-side map from physical KV blocks to window-pool blocks (pool block 0 is the padded spans' block 0)."""
+
+    def __init__(self, num_blocks: int) -> None:
+        import collections
+
+        self.num_blocks = num_blocks
+        self.map: "collections.OrderedDict[int, int]" = collections.OrderedDict({0: 0})
+        #: Mapped blocks that slid out of their sequence's window (evicted first).
+        self.stale: "collections.OrderedDict[int, None]" = collections.OrderedDict()
+        self.free = list(range(num_blocks - 1, 0, -1))
+        self.evicted = 0
+        self.missing = 0
+
+    def slid(self, blocks: list[int]) -> None:
+        """Blocks a sequence's window has moved past: first to go when the pool needs room."""
+        for b in blocks:
+            if b in self.map and b != 0:
+                self.stale[b] = None
+
+    def _victim(self, keep: set) -> int | None:
+        for k in self.stale:
+            if k not in keep:
+                return k
+        return next((k for k in self.map if k not in keep and k != 0), None)
+
+    def assign(self, needed: list[list[int]], reads: list[set]) -> list[dict]:
+        """Pool blocks for each span's needed physical blocks. `reads` are the blocks a span only reads (older than
+        this step's rows): one the pool no longer holds is counted in `missing` (its window K is gone)."""
+        keep = set(b for blocks in needed for b in blocks)
+        out = []
+        for blocks, read in zip(needed, reads):
+            m = {}
+            for b in blocks:
+                self.stale.pop(b, None)
+                if b in self.map:
+                    self.map.move_to_end(b)
+                else:
+                    if b in read:
+                        self.missing += 1
+                    if not self.free:
+                        victim = self._victim(keep)
+                        if victim is None:
+                            raise RuntimeError("deepseek_v41: window pool too small for this step's spans")
+                        self.stale.pop(victim, None)
+                        self.free.append(self.map.pop(victim))
+                        self.evicted += 1
+                    self.map[b] = self.free.pop()
+                m[b] = self.map[b]
+            out.append(m)
+        return out
+
+
+_WINDOW_POOL: "WindowPool | None" = None
+
+
+def _win_write(attn, paged, values: torch.Tensor) -> None:
+    """Write this step's window K rows: the paged cache at the runtime's slots, or the pool at the window slots."""
+    if getattr(attn, "window_pool", None) is None or paged.win_slot_mapping is None:
+        paged.write(attn.window_kv_cache, values)
+        return
+    slot = paged.win_slot_mapping
+    bs = paged.block_size
+    attn.window_pool.index_put_((slot // bs, torch.zeros_like(slot), slot % bs), values)
+
+
+def _win_gather(attn, paged, positions: torch.Tensor) -> torch.Tensor:
+    """Window K rows for absolute `positions`."""
+    if getattr(attn, "window_pool", None) is None or paged.win_table is None:
+        return paged.gather(attn.window_kv_cache.view(-1, attn.head_dim), positions)
+    bs = paged.block_size
+    slots = paged.win_table[positions // bs] * bs + positions % bs
+    return attn.window_pool.view(-1, attn.head_dim).index_select(0, slots)
+
+
 class PagedSpan:
     """Where one scheduled sequence's KV lives in vLLM's paged allocation.
 
@@ -1732,6 +1864,10 @@ class PagedSpan:
         "group_counts",
         "host_table",
         "host_slots",
+        "win_table",
+        "win_slot_mapping",
+        "win_table_host",
+        "win_slots_host",
     )
 
     def __init__(
@@ -1770,6 +1906,12 @@ class PagedSpan:
         #: the megakernel bridge's index arithmetic (`mk_model.StepIndices`).
         self.host_table = None
         self.host_slots = None
+        #: The window pool's block table and this step's window slots (WindowPool), when the pool is on.
+        self.win_table: torch.Tensor | None = None
+        self.win_slot_mapping: torch.Tensor | None = None
+        #: Host copies of the two, for the megakernel bridge (mk_model.StepIndices, the drafter).
+        self.win_table_host: torch.Tensor | None = None
+        self.win_slots_host: list | None = None
 
     def slots(self, positions: torch.Tensor) -> torch.Tensor:
         """Flat cache rows for absolute `positions` in this sequence."""
@@ -2011,7 +2153,7 @@ class Indexer(nn.Module):
         )
         index_k = paged.gather(shared.index_k, group_pos).reshape(read_len, -1)
         weights = self.weights_proj(x) * (self.softmax_scale * self.n_heads**-0.5)
-        index_score = _nki_entry("index_score", "weighted_scores")(
+        index_score = _chunked_weighted_scores(
             q.reshape(-1, self.index_head_dim),
             index_k,
             weights.reshape(seqlen, self.n_local_heads).t().contiguous().float(),
@@ -2044,7 +2186,7 @@ class Indexer(nn.Module):
             )
 
         topk = min(self.index_topk, read_len)
-        idxs = nki_topk(index_score, topk)[1]
+        idxs = _chunked_topk(index_score, topk)
         return torch.where(idxs < compress_lens, idxs + offset, EMPTY_SLOT).int()
 
 
@@ -2213,14 +2355,12 @@ class Attention(nn.Module):
         kv = torch.cat([kv[..., :-rd], apply_rotary_emb(kv[..., -rd:], freqs_cis)], -1)
         kv = act_quant_dequant(kv, 32)
 
-        paged.write(self.window_kv_cache, kv.reshape(seqlen, self.head_dim))
+        _win_write(self, paged, kv.reshape(seqlen, self.head_dim))
 
         span = win + seqlen - 1
         base = start_pos - (win - 1)
         positions = (base + torch.arange(span, device=x.device)).clamp_min(0)
-        window_kv = paged.gather(
-            self.window_kv_cache.view(-1, self.head_dim), positions
-        ).reshape(1, span, self.head_dim)
+        window_kv = _win_gather(self, paged, positions).reshape(1, span, self.head_dim)
         return window_kv, window_topk_idxs(win, seqlen, start_pos, x.device)
 
     def _compress_kv(
@@ -2361,14 +2501,12 @@ class Attention(nn.Module):
                 f"layer {self.layer_id} attention has no window KV cache; "
                 "bind_kv_cache() must run before forward()."
             )
-        paged.write(self.window_kv_cache, kv.reshape(seqlen, self.head_dim))
+        _win_write(self, paged, kv.reshape(seqlen, self.head_dim))
 
         span = win + seqlen - 1
         base = start_pos - (win - 1)
         positions = (base + torch.arange(span, device=device)).clamp_min(0)
-        window_kv = paged.gather(
-            self.window_kv_cache.view(-1, self.head_dim), positions
-        ).reshape(1, span, self.head_dim)
+        window_kv = _win_gather(self, paged, positions).reshape(1, span, self.head_dim)
         return window_kv, window_topk_idxs(win, seqlen, start_pos, device)
 
     def project_out(
@@ -2551,8 +2689,15 @@ class Attention(nn.Module):
         # One write for every sequence's own slots. `slot_mapping` is this
         # step's own rows, so concatenating them in span order lines up with
         # `kv_rows`, which `forward_spans` built over the same concatenation.
-        slots = torch.cat([span.slot_mapping for span in paged])
-        self.window_kv_cache.index_put_(
+        pool = getattr(self, "window_pool", None)
+        if pool is not None and paged[0].win_slot_mapping is not None:
+            slots = torch.cat([span.win_slot_mapping for span in paged])
+            cache = pool
+        else:
+            pool = None
+            slots = torch.cat([span.slot_mapping for span in paged])
+            cache = self.window_kv_cache
+        cache.index_put_(
             (
                 slots // block_size,
                 torch.zeros_like(slots),
@@ -2566,7 +2711,7 @@ class Attention(nn.Module):
         # stacking the block tables turns that into a `gather` over the same
         # integer arithmetic, so the slot list is the same list.
         starts = torch.cat([span.pos for span in paged]).reshape(bsz, 1)
-        tables = torch.stack([span.block_table for span in paged])
+        tables = torch.stack([span.win_table if pool is not None else span.block_table for span in paged])
         window_pos = (
             starts - (win - 1) + torch.arange(span_rows, device=device)
         ).clamp_min(0)
@@ -2574,7 +2719,7 @@ class Attention(nn.Module):
             tables.gather(1, window_pos // block_size) * block_size
             + window_pos % block_size
         )
-        window_kv = self.window_kv_cache.view(-1, head_dim).index_select(
+        window_kv = cache.view(-1, head_dim).index_select(
             0, window_slots.reshape(-1)
         ).reshape(bsz, span_rows, head_dim)
 
@@ -4358,7 +4503,7 @@ class DSparkAttention(Attention):
                 "forward_spec must pass the PagedSpan it was given"
             )
         if paged.at_zero:
-            paged.write(self.window_kv_cache, main_kv.reshape(seqlen, self.head_dim))
+            _win_write(self, paged, main_kv.reshape(seqlen, self.head_dim))
             return x
 
         bsz, block_size, _ = x.shape
@@ -4375,13 +4520,11 @@ class DSparkAttention(Attention):
         )
         kv = act_quant_dequant(kv, 32)
 
-        paged.write(self.window_kv_cache, main_kv.reshape(seqlen, self.head_dim))
+        _win_write(self, paged, main_kv.reshape(seqlen, self.head_dim))
         window_rows = win
         base = draft_pos - (win - 1)
         positions = (base + torch.arange(window_rows, device=x.device)).clamp_min(0)
-        window_kv = paged.gather(
-            self.window_kv_cache.view(-1, self.head_dim), positions
-        ).reshape(1, window_rows, self.head_dim)
+        window_kv = _win_gather(self, paged, positions).reshape(1, window_rows, self.head_dim)
         topk = dspark_topk_idxs(window_rows, base, bsz, block_size, x.device)
         kv = torch.cat([window_kv, kv], dim=1)
 
@@ -5164,17 +5307,22 @@ class DeepseekV41ForCausalLM(nn.Module):
         dtype = self.config.torch_dtype
         layers = []
         for layer_id, block in enumerate(self.layers):
+            if WINDOW_POOL and layer_id > 0:
+                continue  # its window K lives in the window pool (bind_kv_cache)
             layers.append(
                 LayerSpec(
                     name=f"layers.{layer_id}.attn",
                     num_kv_heads=1,
-                    head_size=block.attn.head_dim,
+                    # With the window pool, layers.0's vLLM cache is only the slot authority (bind_kv_cache): keep it small.
+                    head_size=16 if WINDOW_POOL else block.attn.head_dim,
                     dtype=dtype,
                     sliding_window_size=None,
                     chunk_size=None,
                 )
             )
         for stage, block in enumerate(self.mtp):
+            if WINDOW_POOL:
+                continue
             layers.append(
                 LayerSpec(
                     name=f"mtp.{stage}.attn",
@@ -5194,7 +5342,24 @@ class DeepseekV41ForCausalLM(nn.Module):
         attentions = [(f"layers.{i}.attn", b.attn) for i, b in enumerate(self.layers)]
         attentions += [(f"mtp.{s}.attn", b.attn) for s, b in enumerate(self.mtp)]
 
+        global _WINDOW_POOL
+        if WINDOW_POOL:
+            first = kv_caches["layers.0.attn"][0]
+            block_size = first.shape[2]
+            seg = int(os.environ.get("DEEPSEEK_V41_PREFILL_SEGMENT_TOKENS", 4096))
+            per_seq = -(-(self.layers[0].attn.window_size + seg) // block_size) + 2
+            seqs = max(1, int(os.environ.get("DEEPSEEK_V41_MAX_NUM_SEQS", 1)))
+            pool_blocks = int(os.environ.get("DEEPSEEK_V41_WINDOW_POOL_BLOCKS", 4 * seqs * per_seq + 1))
+            _WINDOW_POOL = WindowPool(pool_blocks)
+            logger.info("deepseek_v41: window pool %d blocks of %d (%d a sequence)", pool_blocks, block_size, per_seq)
         for name, attn in attentions:
+            if WINDOW_POOL and (name not in kv_caches or name == "layers.0.attn"):
+                attn.window_pool = torch.zeros(
+                    _WINDOW_POOL.num_blocks, 1, block_size, attn.head_dim,
+                    dtype=self.config.torch_dtype, device=self.norm.weight.device,
+                )
+                attn.window_kv_cache = attn.window_pool
+                continue
             if name not in kv_caches:
                 raise KeyError(
                     f"KV cache for {name} was not allocated; get_kv_spec() "
@@ -5205,7 +5370,7 @@ class DeepseekV41ForCausalLM(nn.Module):
         max_len = self._max_sequence_length()
         self._bind_compress_read_ceiling(max_len)
         device = self.norm.weight.device
-        window = self.layers[0].attn.window_kv_cache
+        window = kv_caches["layers.0.attn"][0] if WINDOW_POOL else self.layers[0].attn.window_kv_cache
         num_slots = window.shape[0] * window.shape[2]
         kv_bytes = sum(
             t.numel() * t.element_size()
@@ -5228,7 +5393,10 @@ class DeepseekV41ForCausalLM(nn.Module):
                     device=device,
                 )
                 if attn.compressor is not None:
-                    attn.compressor.allocate_state(device, num_slots)
+                    # the megakernels pool from the window pool's slots (`mk_model.StepIndices`):
+                    # a group's members are within the window, so the pool holds them
+                    pool_slots = _WINDOW_POOL.num_blocks * window.shape[2] if WINDOW_POOL and _MEGAKERNEL else None
+                    attn.compressor.allocate_state(device, pool_slots or num_slots)
                 own_bytes += sum(
                     t.numel() * t.element_size()
                     for t in (attn.compress_kv_cache, attn.index_k_cache)
@@ -5924,7 +6092,44 @@ class DeepseekV41ForCausalLM(nn.Module):
                     else torch.zeros_like(host_table[0])
                 )
                 span.host_slots = host_slots[begin : begin + length]
+        if _WINDOW_POOL is not None:
+            self._window_tables(out, block_size)
         return out
+
+    @torch._dynamo.disable
+    def _window_tables(self, spans: list, block_size: int) -> None:
+        """Each span's window block table and window slots in the window pool (host code)."""
+        win = self.layers[0].attn.window_size
+        tables_cpu = [sp.block_table.cpu() for sp in spans]
+        needed, reads, ranges = [], [], []
+        for sp, table in zip(spans, tables_cpu):
+            lo = max(0, sp.start_pos - (win - 1)) // block_size
+            hi = (sp.start_pos + max(sp.length, 1) - 1) // block_size
+            hi = min(hi, table.shape[0] - 1)
+            first_written = sp.start_pos // block_size
+            blocks = [int(table[i]) for i in range(lo, hi + 1)]
+            needed.append(blocks)
+            reads.append(set(int(table[i]) for i in range(lo, min(first_written, hi + 1))))
+            ranges.append((lo, hi))
+        missing0 = _WINDOW_POOL.missing
+        maps = _WINDOW_POOL.assign(needed, reads)
+        if _WINDOW_POOL.missing > missing0:
+            logger.warning("deepseek_v41: window pool lost %d window blocks a span still reads (total %d, evicted %d)",
+                           _WINDOW_POOL.missing - missing0, _WINDOW_POOL.missing, _WINDOW_POOL.evicted)
+        for sp, table, (lo, hi) in zip(spans, tables_cpu, ranges):
+            back = max(0, lo - (max(sp.length, 1) // block_size + 2))
+            _WINDOW_POOL.slid([int(table[i]) for i in range(back, lo)])
+        for sp, table, m, (lo, hi) in zip(spans, tables_cpu, maps, ranges):
+            win_table = torch.zeros_like(table)
+            for i in range(lo, hi + 1):
+                win_table[i] = m[int(table[i])]
+            pos = sp.start_pos + torch.arange(sp.length, dtype=torch.int64)
+            win_slots = win_table[pos // block_size].to(torch.int64) * block_size + pos % block_size
+            device = sp.block_table.device
+            sp.win_table_host = win_table
+            sp.win_slots_host = win_slots.tolist()
+            sp.win_table = win_table.to(device)
+            sp.win_slot_mapping = win_slots.to(sp.slot_mapping.dtype).to(device)
 
     @torch._dynamo.disable
     def _bucket_rows(

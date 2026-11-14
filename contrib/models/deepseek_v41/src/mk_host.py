@@ -37,6 +37,7 @@ class AttnIndices:
     grp_mslots: torch.Tensor = None  # [B*G*ratio, 1] member slots of each group (pooling inputs)
     grp_wslots: torch.Tensor = None  # [B*G, 1] cache slot each group's latent is written to
     groups_per_span: int = 0        # G (padded groups write slot 0, the null block)
+    wwin_slots: torch.Tensor = None  # [T, 1] window-cache slot of each row (write_slots unless pooled)
 
 
 def slots_of(block_table: torch.Tensor, positions: torch.Tensor, block_size: int) -> torch.Tensor:
