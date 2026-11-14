@@ -2,16 +2,16 @@
 
 ### Executive Summary
 
-We built and optimized DeepSeek V4.1 Flash inference for high interactivity on AWS Trainium 3 within **two weeks** (Oct 22 to Nov 5), achieving **3.1x** faster prefill and decode from PyTorch baseline using NKI kernels, and an additional **29x** faster decoding speed and **7x** faster response. The per user token serving can reach up to **343 - 445 tokens/s** in coding and math tasks. The performance improvement comes from:
+We built and optimized DeepSeek V4.1 Flash inference for high interactivity on AWS Trainium 3 within **two weeks** (Oct 22 to Nov 5), achieving **3.1x** faster end to end speedup than PyTorch baseline using NKI kernels, and an additional **29x** faster decoding speed and **7x** faster response with further optimizations. The per user token serving can reach up to **343 - 445 tokens/user/s** in various tasks. Besides fully exploiting the Trainium 3 architectural merits, the performance improvement comes from:
 - **Progressive Megakernel Fusion and Optimization.** We find the right number of blocks to fuse to eliminate kernel launch overheads from host and the overhead of loading large graph for huge megakernel. Megakernel also brings room of further optimization, including weight prefetching and on-chip activation transfer across blocks.
-- **Optimize vLLM Engine for Trainium.** One RPC per step, direct launches of cached NEFFs, and async scheduling with an on-device step prologue cut the device's idle time from 4.4–5.1 ms to 0.7 ms per step.
-- **Temporal Disaggregation to Customize Different Computations** Prefill and decode run separate kernels, and the decode MoE, shared expert and Engram projection switch to their own sharding (TP8 × EP8 for the MoE on 16 devices, TP8 × EP4 on 8). The final deployment fits on 8 of the 16 devices of a trn3.48xlarge, so one instance can serve two high-interactivity sessions.
+- **Optimize vLLM Engine for Trainium.** This includes reducing RPC calls from serving engine to workers on each rank, direct launches of cached NEFFs, and async scheduling with an on-device prologue step, reducing the device's idle time from 4.4–5.1 ms to 0.7 ms per speculative step.
+- **Temporal Disaggregation to Customize Different Computations** We designed specialized megakernels for prefill and decode, and adopt different parallelization scheme for decode MoE, shared expert and Engram projection. The final deployment fits on 8 of the 16 devices of a trn3.48xlarge, so one instance can serve two high-interactivity sessions.
 
-Compared to GPU, our time to first token is similar to published GPU serving: 0.24 s for a 1,024-token prompt, against 0.2 s for Dynamo vLLM and 0.3 s for Together AI. Decoding reaches up to 445 tokens/s per user, still 1.5x slower than the 653.6 tokens/s of a GB300 NVL72 deployment on 4 B300 GPUs. But at estimated instance prices, an 8-device Trainium 3 replica produces up to 1.74–1.88x more output tokens per dollar. The decode gap is not raw hardware, since 8 Trainium 3 devices match 4 B300 GPUs in FP8 throughput and exceed them in HBM bandwidth. It comes from latency in a long chain of small operations, collectives and launches, which we analyze in the last section.
+Compared to GPU, we achieved similar TTFT at 1K input compared to SoTA B300 deployment. Based on the estimated instance prices of Trainium 3, our deployment can achieve up to 1.74–1.88x more output tokens per dollar TCO than B300, indicating a non-trivial cost efficiency of Trainium 3 compared to GPUs.
 
 ![Optimization trajectory of DeepSeek V4.1 Flash on Trainium 3](rpt_figs/optimization_trajectory.png)
 
-*Figure 1. Batch-1 output speed per user (1000 / median TPOT; 512-token prompts, 128 output tokens) after each validated optimization round, Oct 22 to Nov 5. The shaded region is the same model on 8 of the 16 Trainium 3 devices.*
+*Figure 1. Concurrency-1 output speed per user (1000 / median TPOT; 512-token prompts, 128 output tokens) after each validated optimization round, Oct 22 to Nov 5. The shaded region is the same model on 8 of the 16 Trainium 3 devices.*
 ![Time to first token of DeepSeek V4.1 Flash on Trainium 3](rpt_figs/ttft_trajectory.png)
 
 *Figure 2. Batch-1 time to first token (median TTFT; 1,024-token prompts) for the same runs. It falls from 1,701 ms to 230 ms on 16 devices and is 244 ms on 8 devices; all of the gain comes from prefill kernels.*
@@ -19,114 +19,129 @@ Compared to GPU, our time to first token is similar to published GPU serving: 0.
 
 ### Table of Content
 
-- [Overview of DeepSeek V4.1 Flash](#overview-of-deepseek-v41-flash)
+- [DeepSeek V4.1 Flash Architecture](#overview-of-deepseek-v41-flash)
 - [AWS Trainium 3 vs. NVIDIA B300](#aws-trainium-3-vs-nvidia-b300)
 - [Inference Optimization: Reaching 60x Speedup Over 12 days](#inference-optimization-reaching-60x-speedup-over-12-days)
   - [Exploit new hardware features in Trainium 3](#exploit-new-hardware-features-in-trainium-3)
   - [Kernel and MegaKernel Fusion](#kernel-and-megakernel-fusion)
   - [Optimize vLLM Backend for Trainium](#optimize-vllm-backend-for-trainium)
-  - [Temporal PD/AFD: Specialized Kernels/Parallelization for Different Computations](#temporal-pdafd-specialized-kernelsparallelization-for-different-computations)
+  - [Temporal Disaggregation: Specialized Kernels/Parallelization for Different Computations](#temporal-pdafd-specialized-kernelsparallelization-for-different-computations)
   - [Serving Two High Interactivity Sessions at a Time](#serving-two-high-interactivity-sessions-at-a-time)
-  - [What a User Sees: Speed by Content, Context and Batch Size](#what-a-user-sees-speed-by-content-context-and-batch-size)
+  
+- [Experiment Results](#what-a-user-sees-speed-by-content-context-and-batch-size)
 - [Comparison with GPU: What does the gap comes from?](#comparison-with-gpu-what-does-the-gap-comes-from)
   - [What if Trainium 3 were organized like four GPUs?](#what-if-trainium-3-were-organized-like-four-gpus)
 - [Composing RSI with Expert Knowledge: Agent-Expert Disaggregated Optimization](#composing-rsi-with-expert-knowledge-agent-expert-disaggregated-optimization)
+- [References](#references)
 
----
 
-## Overview of DeepSeek V4.1 Flash
+## DeepSeek V4.1 Flash Architecture
 
-[DeepSeek V4.1 Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash) is a sparse mixture-of-experts (MoE) model with 552B backbone parameters and another 196B parameters in **Engram** memory tables. With the speculative drafter and the vision tower, the released checkpoint holds about 763B parameters in 475 GiB, but only about 16B of them are active for each decoded token. The weights ship in block-scaled low precision: the routed experts in MXFP4 (FP4 values with one E8M0 scale per 32 values), and attention and the shared expert in FP8 with 32×32 block scales.
+DeepSeek V4.1 Flash [1] is a mixture-of-experts (MoE) model with 552B backbone parameters and another 196B parameters in **Engram** conditional-memory modules, which are hashed n-gram embedding tables. Figure 3 shows the architecture. Its 40 layers form a **causal encoder-decoder (CED)**: a 20-layer causal encoder followed by a 20-layer decoder, whose global KV cache is projected from the hidden states of the last encoder layer instead of from each decoder layer's own hidden states.
 
-Figure 3 shows the architecture. The model has 40 causal layers with a hidden size of 5,120, which the technical report organizes as a 20-layer causal encoder followed by a 20-layer decoder whose global KV cache is projected from the encoder's output. Compared with a standard transformer, every layer adds pieces that are new or uncommon. Attention is **compressed sparse attention (CSA2)**: 64 query heads of dimension 512 attend over a single shared 512-dimensional KV latent, and a lightweight indexer (32 heads of dimension 128) selects the top 512 compressed KV blocks for each query, next to a 128-token sliding window. To save work, most layers reuse the KV cache and the top-k selection of an earlier layer instead of computing their own. The residual stream is split into four streams by **hyper-connections (mHC)**, which mix them around every sublayer with 4×4 matrices normalized by 20 Sinkhorn iterations. Every layer has an MoE with 384 routed experts, top-6 routing and one shared expert. Layers 1 and 14 also look up hashed n-gram embeddings in two Engram tables of 384M rows each. Finally, **DSpark**, three extra blocks that read the hidden states of layers 37 to 39, drafts five tokens per pass for speculative decoding, and the target model verifies them in its next step.
+Apart from two layers that use only sliding-window attention (SWA), every layer replaces DeepSeek V4's hybrid of compressed sparse attention (CSA) and heavily compressed attention (HCA) with **Compressed Sparse Attention 2 (CSA2)**: a lightweight indexer scores the compressed global KV entries, and each query attends to the top 512 selected entries together with the layer's own 128-token SWA window. Each CSA2 layer is statically assigned one of three modes, which differ in how the layer obtains its global KV, indexer keys and top-k indices:
+
+- **Full:** the layer computes its own global KV and indexer keys and selects its own top-k entries.
+- **Reindex:** the layer reuses the global KV and indexer keys of the most recent Full layer, but scores them with its own indexer query and selects fresh top-k entries.
+- **Reuse:** the layer reuses both the global KV and the latest top-k indices and runs no indexer at all.
+
+The layers are arranged in groups that each start with a Full or Reindex layer followed by Reuse layers. The encoder compresses every 2 tokens into one KV entry, while the decoder keeps one entry per token. The decoder also uses a **Hierarchical Sparse Indexer**: the first full indexer layer in decoder will select the best blocks of positions as a candidate pool based on the first layer top-k results, and the Reindex layers score only these candidates instead of the whole context. The residual stream is split into four streams by **Single-Pass mHC** (manifold-constrained hyper-connections), which mixes them between blocks with 4×4 matrices normalized by 20 Sinkhorn iterations. Every layer has an MoE with 384 routed experts, top-6 routing and one shared expert. Finally, DeepSeek V4.1 Flash ships with **DSpark**, a speculative-decoding module that drafts five tokens in one forward pass.
 
 ![DeepSeek V4.1 Flash architecture](rpt_figs/dsv41_architecture.png)
 
-*Figure 3. The 40-layer causal encoder-decoder of DeepSeek V4.1 Flash. Figure 3 of the [DeepSeek-V4.1-Flash technical report](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf).*
-
-At batch size 1, none of this is expensive in FLOPs. What makes high interactivity hard is the length of the dependency chain in one decode step. Each of the 40 layers runs Sinkhorn mixing on 4×4 matrices, a top-k over the index scores, gathers from paged compressed caches, block-scaled FP8 and FP4 matmuls over only six rows (one token plus five drafts), and, once the model is sharded, two all-reduces. Each of these operations is small, and each one waits for the previous one. Most of this blog is about shortening this chain on Trainium 3.
-
-Speculative decoding needs a closer look, because it decides how a step time turns into tokens per second. In every decode step, the model processes six rows for a request: the newest confirmed token, and the five tokens that DSpark drafted in the previous step. The model computes its own next token at each of the six positions. The drafts are then checked from left to right. A draft is accepted if it equals the token that the model itself chose at the position before it. The first draft that differs is replaced by the model's own token, and the drafts after it are thrown away. A step therefore emits between one and six tokens, and every emitted token is the model's own greedy choice, so speculation changes the speed of an answer and not its quality. (The text can still differ from a run without drafts where two candidate tokens are almost tied, because floating-point sums run in a different order for six rows than for one.) On our benchmark prompts, 43 to 51% of the drafts are accepted, so a step emits 3.2 to 3.6 tokens. Acceptance depends on how predictable the text is, and we measure this for different kinds of answers [later](#what-a-user-sees-speed-by-content-context-and-batch-size).
-
-Our port serves the text model and runs all 40 layers for every prompt token. It supports batch sizes 1 and 10 and contexts up to 8,448 tokens in our tests; the vision tower and structured outputs are not supported. Greedy requests take the optimized path that this blog measures, and requests with a sampling temperature take a slower path, at about half the speed. We check correctness at two levels. Each optimized kernel is compared with the outputs of the kernel it replaces, recorded on every rank of the live server, and most replacements are bit-exact, which means that every output value is identical. An integration test then serves the full model and checks the text it generates. For example, the model must recall an access code that is planted 2,008 tokens deep in a 2,048-token prompt, and it must answer that the capital of France is Paris. We check text and not logits because no reference can run the whole model in full precision (an FP32 copy of the weights alone would need about 1.9 TB). Instead, each layer of the port was compared with the reference code that ships with the checkpoint, on CPU.
-
----
+*Figure 3. The 40-layer causal encoder-decoder architecture of DeepSeek V4.1 Flash. Source: [2].*
 
 ## AWS Trainium 3 vs. NVIDIA B300
 
-**AWS Trainium 3** is the fourth generation of AWS's machine-learning chips. A Trainium 3 device has eight compute cores, called **NeuronCore-v4**, around four HBM stacks with 144 GiB in total (Figure 4, left). Like earlier generations, a NeuronCore is a heterogeneous processor rather than a SIMT core (Figure 4, right). The **Tensor Engine** is a systolic array for matrix multiplications; the **Vector Engine** and **Scalar Engine** run vector operations such as reductions and activation functions; and the **GPSIMD Engine** runs general-purpose code. Each engine executes its own instruction stream, and the engines synchronize through semaphores. They share a software-managed on-chip SRAM, **SBUF** (256 MiB per device), while the Tensor Engine accumulates into a separate buffer, **PSUM**, and DMA engines move data between HBM and SBUF. We program all of this through the **Neuron Kernel Interface (NKI)**, a Python kernel language comparable to Triton on GPUs; every kernel in this work is written in NKI. We run with logical NeuronCore configuration 2 (LNC = 2), which pairs two physical cores into one logical core. A device then exposes four logical cores, each with 36 GiB of the device's HBM. A **rank** is one vLLM worker process bound to one logical core, so 16 devices give 64 ranks and 8 devices give 32. LNC = 2 is the default of the Neuron software stack, and we did not try other settings.
+A Trainium 3 device has eight compute cores (NeuronCore-v4) and 4 HBM stacks, where every pair of cores share the same HBM stack. A NeuronCore is a heterogeneous processor with various specialized engines: the **Tensor Engine** is a systolic array for matrix multiplications; the **Vector Engine** and **Scalar Engine** run vector operations such as reductions and activation functions; and the **GPSIMD Engine** runs general-purpose code. They share a software-managed on-chip scratchpad, **SBUF**, while the Tensor Engine accumulates into a separate buffer, **PSUM**. The DMA engines move data between HBM and SBUF. Although there are 8 cores in one device, the architecture is organized as 4 ranks connected through NeuronLink-v4. Interconnects between ranks in the same device and across devices are the same, so one can consider a Trainium 3 device are "4 devices".
 
 ![Trainium 3 device and the NeuronCore programming model](rpt_figs/trainium3_neuroncore.png)
 
-*Figure 4. Left: a Trainium 3 device, eight NeuronCore-v4 cores around four HBM stacks. Right: the programming model of one NeuronCore. DMA moves data between HBM and the on-chip SBUF; the tensor, vector, scalar and GPSIMD engines read from and write to SBUF; the tensor engine accumulates into PSUM. Sources: [AWS Neuron documentation, Trainium3 architecture](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/about-neuron/arch/neuron-hardware/trainium3.html) and [NKI Trainium3 architecture guide](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/nki/guides/architecture/trainium3_arch.html).*
+*Figure 4. Left: a Trainium 3 device, eight NeuronCore-v4 cores around four HBM stacks. Right: the programming model of one NeuronCore. DMA moves data between HBM and the on-chip SBUF; the tensor, vector, scalar and GPSIMD engines read from and write to SBUF; the tensor engine accumulates into PSUM [3] [4].*
 
-Trainium 3 adds three features that matter for this model. Its Tensor Engine multiplies block-scaled MX FP8 and FP4 operands natively, its SBUF is larger than Trainium 2's (256 MiB against 224 MiB per device), and its devices are connected through switches instead of Trainium 2's 2D torus. A trn3.48xlarge instance has 16 devices (Figure 5). On our instance, `neuron-ls` reports a direct link between devices 2k and 2k+1, all-to-all connectivity among the eight even devices through one switch, and the same among the eight odd devices through a second switch. We place each 8-rank tensor-parallel group on one linked pair of devices. The groups have 8 ranks because of the model: its attention output projection is block-diagonal over 8 groups, so the attention weights can be split across at most 8 ranks (TP8). With more ranks than 8, every group of 8 ranks holds its own copy of the attention weights: 8 copies on 64 ranks, and 4 copies on 32.
+Compared with Trainium 2, Trainium 3 has 1.5x the HBM capacity (144 GiB against 96 GiB) and 1.7x the HBM bandwidth (4.9 TB/s against 2.9 TB/s) per device. The devices are also connected differently. Trainium 2 links its devices in a 2D torus, so traffic between distant devices passes through the devices in between. A trn3.48xlarge instance has 16 Trainium 3 devices connected through switches instead (Figure 5). Each device has a direct link to one partner, device 2k to device 2k+1. Beyond that, the instance is split into two halves: the eight even-numbered devices are connected all-to-all through one switch, and the eight odd-numbered devices through a second switch. A device therefore reaches its partner and every device of its own half in one hop, and any other device in two hops, through its partner or through the switch.
 
 ![trn3.48xlarge interconnect](rpt_figs/trn3_48xlarge_topology.png)
 
-*Figure 5. One trn3.48xlarge server, as reported by `neuron-ls --topology`. Devices 2k and 2k+1 share a direct link. The 8 even devices are connected all-to-all through one switch, and the 8 odd devices through another. With LNC = 2 each device exposes 4 logical cores, so the 16-device configuration runs 64 ranks on cores 0–63. Each attention TP8 group (8 consecutive ranks) sits on one linked device pair. The 8-device configuration uses devices 0–7.*
+*Figure 5. Interconnect topology of trn3.48xlarge. Devices 2k and 2k+1 share a direct link. The 8 even devices are connected all-to-all through one switch, and the 8 odd devices through another. With 4 ranks in each device, the 16-device configuration runs 64 ranks on cores 0–63. Each attention TP8 group (8 consecutive ranks) sits on one linked device pair.*
 
-The table below compares a Trainium 3 device with an NVIDIA B300 GPU. Per chip, B300 is the bigger part: it has 2x the FP8 throughput, 6x the FP4 throughput, 1.6x the HBM bandwidth and twice the memory, while Trainium 3 has more scale-up interconnect bandwidth.
+One question is, compared to B300 which is the current state-of-the-art serving device, what's the competence of Trainium 3? The table below compares a Trainium 3 device with an NVIDIA B300 GPU. B300 has 2x the FP8 throughput, 6x the FP4 throughput, 3.7x the BF16 throughput, 1.6x the HBM bandwidth, about twice the memory and 7x the intra-server interconnect bandwidth than Trainium. 
 
-| Per chip | Trainium 3 | B300 |
+| Per chip | Trainium 3 | B300 | B300 / Trainium 3 |
+|---|---|---|---|
+| Dense FP8 | 2.5 PFLOPS (MXFP8) | 5 PFLOPS | 2x |
+| Dense FP4 | 2.5 PFLOPS (MXFP4) | 15 PFLOPS | 6x |
+| Dense BF16 | 0.67 PFLOPS | 2.5 PFLOPS | 3.7x |
+| FP32 | 0.18 PFLOPS | 0.08 PFLOPS | 0.45x |
+| HBM | 144 GiB at 4.9 TB/s | up to 288 GB at 8 TB/s | 1.6x bandwidth |
+| Intra-server interconnect | 256 GB/s (NeuronLink-v4) | 1,800 GB/s (NVLink 5) | 7x |
+
+*B300 values are NVIDIA's GB300 NVL72 rack figures divided by its 72 GPUs, with sparse figures halved to dense  [3] [5].*
+
+Consider the FLOPs contribution of DeepSeek V4.1 Flash, we found that 47.6% are FP4 (the routed experts), 30.8% FP8, 17.2% BF16 and 4.5% FP32:
+
+| Data type | Share of FLOPs | B300 / Trainium 3 |
 |---|---|---|
-| Dense FP8 | 2.5 PFLOPS (MXFP8) | 5 PFLOPS |
-| Dense FP4 | 2.5 PFLOPS (MXFP4) | 15 PFLOPS |
-| Dense BF16 | 0.67 PFLOPS | 2.5 PFLOPS |
-| HBM | 144 GiB at 4.9 TB/s | up to 288 GB at 8 TB/s |
-| Scale-up interconnect | 2.56 TB/s (NeuronLink-v4) | 1.8 TB/s (NVLink 5) |
+| FP4 | 47.6% | 6x |
+| FP8 | 30.8% | 2x |
+| BF16 | 17.2% | 3.7x |
+| FP32 | 4.5% | 0.45x |
 
-*Sources: [AWS Trainium3 architecture](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/about-neuron/arch/neuron-hardware/trainium3.html). B300 values are NVIDIA's [GB300 NVL72](https://www.nvidia.com/en-us/data-center/gb300-nvl72/) rack figures divided by its 72 GPUs, with sparse figures halved to dense.*
-
-The deployments we compare, however, are an 8-device Trainium 3 replica and 4 B300 GPUs, and at that scale the hardware is close. Both have about 20 PFLOPS of FP8 throughput (8 × 2.5 against 4 × 5) and about the same HBM capacity (1.24 TB against 1.15 TB), and the Trainium 3 replica has 22% more HBM bandwidth (39 TB/s against 32 TB/s). At batch size 1, the model uses a small fraction of either compute budget, so the per-user gap we measure is not a gap in raw hardware. We come back to it in the [last section](#comparison-with-gpu-what-does-the-gap-comes-from).
-
----
+Therefore, 1 B300 is equivalent to 4 Trainium 3 in terms of the FLOPs performance for DeepSeek V4.1 Flash, about 2 Trainium 3 in terms of the HBM bandwidth, and 7 Trainium 3 for interconnect bandwidth. In production deployment, although decoding of LLMs are highly memory bounded, the large collective overheads and dependency chains between compute, collective, and DMA access are often the culprits of overall slowdown. Furthermore, given that Trainium 3 needs to perform collectives with more ranks, the interconnect bandwidth become a more severe bottleneck. Therefore, we believe more than 2 Trainium 3 is needed to catch up a single B300 GPU.
 
 ## Inference Optimization: Reaching 60x Speedup Over 12 days
 
-We started from the Trainium 2 port of DeepSeek V4.1 Flash, which runs one NKI kernel per operation, and brought it up on a trn3.48xlarge on Oct 22. It decoded at 99.4 ms per token. Over the next two weeks, we optimized it in four directions: using Trainium 3's new hardware features, fusing kernels into megakernels, removing host overhead in vLLM's Neuron backend, and specializing kernels and parallelization for each phase. The table below lists every validated round, and Figure 1 plots them. Per user, decoding became 28.6x faster (99.4 ms to 3.47 ms). Because the final deployment uses half of the devices, output per device grew about 57x. Every row is the same benchmark cell: 512-token prompts, batch size 1, 128 output tokens, and a draft acceptance of 46 to 52% in every round, so the rows differ in step time and not in how many tokens a step emits.
+Our deployment is built on the vLLM Neuron plugin [8], which adds a Neuron backend to vLLM [9], and all of its kernels are written in the Neuron Kernel Interface (NKI) [10] on Neuron SDK 2.33.0. Many components of DeepSeek V4.1 Flash, such as CSA2, mHC, Engram and DSpark, are not yet supported by vLLM Neuron. We therefore first brought the model up on a trn2.48xlarge, implementing the missing operations and validating correctness there, and then moved it to a trn3.48xlarge on Oct 22, where it decoded at 99.4 ms per token. Over the following two weeks, we optimized it in four directions: using Trainium 3's new hardware features, fusing kernels into megakernels, removing host overhead in vLLM's Neuron backend, and specializing kernels and parallelization for each phase.
 
 ### Exploit new hardware features in Trainium 3
 
-Running the Trainium 2 kernels on Trainium 3 gave us a working baseline, but it left most of the new hardware unused. Three features changed how we wrote the kernels, and two others needed care.
+Apart from larger and faster components, the NeuronCore-v4 on Trainium 3 adds new instructions and execution modes [4]. We exploit these new features and found that they contribute to the speedup non-trivially.
 
-#### Native MX matmul and on-chip key selection (73.1 ms to 31.6 ms, 2.31x)
+#### Native MXFP8/FP4 Matrix Multiplication in Tensor Engine
 
-DeepSeek V4.1 Flash ships its weights as FP8 and FP4 values with one E8M0 scale per 32 elements, which is the MX format. Trainium 3's Tensor Engine multiplies such operands natively with `nc_matmul_mx`: one instruction contracts 512 elements, applies the scales inside the systolic array, and runs at 4x the BF16 rate. We therefore re-lay the weights once at load time and quantize the activations on chip with `quantize_mx` right before each matmul, so the FP8 and FP4 weights enter the Tensor Engine as they are stored. Trainium 2 has no MX matmul. The closest option there is its FP8 double-row mode, which has no block scales. The scales would have to be folded into the FP8 values first, and when we tried this, a quarter of the nonzero weight values underflowed to zero, so the mode is not usable for these weights.
+DeepSeek V4.1 Flash uses OCP microscaling (MX) format: FP8 and FP4 values with one E8M0 scale per 32 elements, which are not supported on Trainium 2. The NeuronCore-v4 Tensor Engine multiplies such operands natively with `nc_matmul_mx`. The operands are packed four to a word (`float8_e4m3fn_x4`, `float4_e2m1fn_x4`), so one instruction contracts 512 elements instead of 128 to achieve 4x throughput compared to BF16 matmul. We load each weight once into this packed layout, with its scales alongside, so that the FP8 and FP4 weights stream into the Tensor Engine exactly as the checkpoint stores them. The activations are quantized on chip on the fly with `quantize_mx` running on the vector engine.
 
-In the same round, two more changes kept data on chip. The sparse attention selects 512 compressed KV blocks for each query. Instead of first gathering these keys into a dense buffer in HBM, the kernel keeps a transposed slot table resident in SBUF (up to 96 KiB per partition) and reads each token's keys with indirect DMA straight into the QK matmul. The MoE runs a loop bounded at run time over only the experts that were picked, instead of over every expert on the rank. Together, the three changes cut TPOT from 73.1 ms to 31.6 ms.
+#### Tensor indirection on chip
 
-#### A larger SBUF and an exact rsqrt
+On the NeuronCore-v4, the compute engines can read and write SBUF through an index tensor: one instruction gathers or scatters along the free dimension, where Trainium 2 needs a separate instruction for each irregular access. We use this for CSA2's sparse attention, where each query attends to its own selection of up to 512 KV entries plus the sliding window. At the start of a step, the kernel gathers the step's window and compressed KV rows from the paged caches with indirect DMA into a slot table, transposes the table once with a DMA transpose, and keeps it resident in SBUF. Each token's QK matmul then reads its own columns of this table directly, through tensor indirection on the matmul's moving operand. 
 
-The larger SBUF lets the final decode kernels keep the four residual streams of the six rows in flight in SBUF through a whole block and hand them to the next block on chip, as we describe in the next section. Trainium 3's hardware reciprocal square root is within 1 ulp of the exact result, so we dropped the Newton refinement step that had followed every normalization. It shipped together with the last 16-device fusion round, which took TPOT from 4.17 ms to 3.77 ms.
+The native MX matmuls and the on-chip key selection landed in the same round, together with an MoE loop over only the experts that were picked. The three changes cut TPOT from 73.1 ms to 31.6 ms, the largest single step of this work.
 
-#### What needed care
+#### Exact rsqrt on the GPSIMD Engine
 
-Two features cost more than we expected. Dynamic control flow works but is not free: each iteration of a loop bounded at run time cost about 10 µs, because every engine drains its work and synchronizes with the others at each iteration. The loop must also run the same number of iterations on both physical cores of a logical core; when the counts differed, the kernel hung until the runtime's timeout. The batch-1 decode MoE therefore later moved from the dynamic expert loop to static expert slots. In addition, int64 arithmetic in compiled graphs runs at 32-bit width on Trainium 3. This broke the Engram n-gram hash until we rewrote it with exact int32 operations on the GPSIMD Engine.
+The GPSIMD Engine can run activation functions with `activation2` instruction, and its reciprocal square root is within 1 FP32 ulp of the exact result rather than a polynomial approximation. This avoids further refinement with Newton's method to improve the accuracy. This is especially useful for `rsqrt` operator, which is widely used in normalization on mHC. It shipped with the last 16-device fusion round, which took TPOT from 4.17 ms to 3.77 ms.
+
+#### Balancing work with the Scalar Engine's performance mode
+
+The NeuronCore-v4 Scalar Engine runs `tensor_copy` and `tensor_scalar` natively, at up to 2x the throughput for BF16 data, so these operations can be placed on either the Vector Engine or the Scalar Engine. At batch size 1, a decode block is a chain of small operations, and an operation that waits for a busy engine delays everything behind it. The final decode kernels place part of these copies and scalings on the Scalar Engine, for example a share of the PSUM-to-SBUF copies of the transposed keys, to balance the load between the two engines and keep the Vector Engine free for the operations on the critical path.
+
+#### DMA priorities
+
+Each DMA on the NeuronCore-v4 can carry one of four priority levels, and the DMA engines serve higher-priority transfers first. A decode block issues many transfers at once, and only some of them are on the critical path. The final kernels give priority 0 to the attention and all-rank all-reduces, to the scale gathers that the first expert matmul waits for, and to the first routed expert's weights; later experts' weights get lower priorities in the order they are used, and the down-projection weights get the lowest. This lets the kernels prefetch aggressively without delaying the transfers that the engines are waiting for, which matters most during the all-reduces.
 
 ### Kernel and MegaKernel Fusion
 
 The Trainium 2 port launches one kernel per operation, hundreds of them per decode step. Each launch costs host time, a device-side entry, and a round trip through HBM for its outputs. We removed these costs in four stages (Figure 6). Each stage taught us the same lesson: a fused kernel is a new program with its own bottlenecks, and it needs its own tuning before it becomes faster.
 
-#### Stage 1: One megakernel per transformer block (99.4 ms to 73.1 ms, 1.36x)
+#### Stage 1: One megakernel per transformer block
 
-We first wrote one NKI kernel per transformer block, for prefill and for decode, plus one for the drafter. We tuned many of these kernels with agentic optimization loops, which the [last section](#composing-rsi-with-expert-knowledge-agent-expert-disaggregated-optimization) describes: an AI agent edits a kernel, runs it on the device against inputs recorded from the live server, and keeps a change only if the kernel is faster and its outputs are still correct. Collectives run inside these kernels: each block issues its all-reduces over the 8-rank attention group and over all ranks from NKI, and the two physical cores of a logical core split the work and exchange partial results directly with `sendrecv`.
+We first wrote one NKI kernel per transformer block, for prefill and for decode, plus one for the drafter. We tuned many of these kernels with agentic optimization loops, which the [last section](#composing-rsi-with-expert-knowledge-agent-expert-disaggregated-optimization) describes: an AI agent edits a kernel, runs it on the device against inputs recorded from the live server, and keeps a change only if the kernel is faster and its outputs are still correct. Collectives run inside these kernels: each block issues its all-reduces over the 8-rank attention group and over all ranks from NKI, and the two physical cores of a logical core split the work and exchange partial results directly with `sendrecv`. This first step cut TPOT from 99.4 ms to 73.1 ms.
 
 The 40 blocks come in 9 variants, which we call archetypes: a block either computes its own KV cache and top-k selection or reuses those of an earlier block, and layers 1 and 14 add the Engram lookup. By Oct 27, agentic optimization loops had given each of the 9 archetypes its own tuned prefill and decode kernel, 18 packages in total, all bit-exact with the kernels they replaced (31.6 ms to 28.3 ms). But a decode step still launched 40 kernels, and the launches, not the kernels, now set the pace. In a traced run, the 40 launches took about 66 ms of a 97 ms decode step, while each block needed only 0.6 to 0.9 ms of device time. (A step emitted about 3.4 tokens at that time, which is how a 97 ms step corresponds to a 28.3 ms TPOT.)
 
-#### Stage 2: Eight blocks per launch (28.3 ms to 17.7 ms, 1.60x)
+#### Stage 2: Eight blocks per launch
 
 Fusing eight consecutive blocks into one launch reduced a decode step to five layer launches and cut TPOT from 28.3 ms to 17.7 ms. Larger launches were not better. In a side-by-side test, launches of 20 blocks gave a TPOT of 17.2 ms against 16.3 ms for launches of 8. The host cost of a launch grows with its number of input and output tensors, from about 1.5 ms for one block (70 tensors) to about 5 ms for eight blocks (about 505 tensors), and the first block of a step cannot start before the whole launch is submitted. The next section removes most of this host cost.
 
-#### Stage 3: Optimize each fused launch as a whole (14.0 ms to 11.5 ms, 1.22x)
+#### Stage 3: Optimize each fused launch as a whole
 
 After the backend changes of the next section, we optimized each of the five fused launches as one program, with agentic optimization loops running on the inputs and outputs recorded from the live server. The loops shared the index tables across the eight blocks of a launch, kept outputs in SBUF instead of writing them to HBM, prefetched the next block's weights during the all-reduce, and split the few-row work across both physical cores. Two of the launches, measured standalone, went from 6.5 ms to 4.6–4.7 ms each, and TPOT went from 14.0 ms to 11.5 ms.
 
-#### Stage 4: On-chip blocks and merged launches (4.90 ms to 3.77 ms, 1.30x)
+#### Stage 4: On-chip blocks and merged launches
 
 In the last 16-device round, a six-row decode block runs entirely on chip. The four residual streams stay in SBUF, the hyper-connection maps run on the Tensor Engine, and the indexer, compressor, Engram gate and MoE keep their activations on chip. With activations no longer leaving the chip, the launch boundaries became the next cost. At the start of a launch, every rank waits at an entry barrier until all ranks have started the same launch, because the collectives inside it need all of them. Each entry barrier took 95 to 165 µs, about 0.65 ms per step. We therefore merged the layers into three launches: layers 0–7, layers 8–23, and layers 24–39 with the head.
 
-Again, fusion did not pay off by itself. The first merged launch spilled 564 MB per step to HBM: intermediate data that did not fit in SBUF was written to HBM and read back. Double-buffering the tiles of the MoE gate and up-projection weights brought the merged launch to 4,148 µs, against 4,310 µs for its parts, and handing the block state across the launch's internal boundaries on chip saved another 28 to 42 µs per boundary. With the exact rsqrt, TPOT reached 3.77 ms.
+Again, fusion did not pay off by itself. The first merged launch spilled 564 MB per step to HBM: intermediate data that did not fit in SBUF was written to HBM and read back. Double-buffering the tiles of the MoE gate and up-projection weights brought the merged launch to 4,148 µs, against 4,310 µs for its parts, and handing the block state across the launch's internal boundaries on chip saved another 28 to 42 µs per boundary. Together with the exact rsqrt, this round took TPOT from 4.90 ms to 3.77 ms.
 
 Over the four stages, a batch-1 decode step went from hundreds of kernel launches to 40 block launches, then to 8 NEFF executions (a step prologue, five fused layer launches, a sampling tail and the drafter), 6 after the last 16-device round, and 4 on the 8-device deployment.
 
@@ -138,17 +153,17 @@ Over the four stages, a batch-1 decode step went from hundreds of kernel launche
 
 Once the kernels were fused, the host became the bottleneck. In vLLM, one process, the engine core, schedules the requests, and one worker process per rank launches NEFFs on its logical core. The engine core drives the workers with remote procedure calls (RPCs), and every call and every launch costs host time during which the device waits. A NEFF launch with collectives cost at least 1.5 ms of host time, and a launch with about 500 input and output tensors cost about 5 ms, because the runtime rebuilt its I/O ring on every call. Meanwhile, the device sat idle between steps while the host prepared the next one. We removed these costs in four steps (Figure 7).
 
-#### Step 1: One RPC per step (17.7 ms to 14.8 ms, 1.20x)
+#### Step 1: One RPC per step
 
-vLLM's engine core drives the workers with three RPCs per decode step: one to execute the model, one to sample, and one to collect the draft tokens. We moved sampling into `execute_model` and returned the drafts in the step's output, so a step needs only one RPC. In the same round, the token embedding moved into the first fused launch, the greedy head and the argmax over the full vocabulary moved into the last one, and launch plans are cached. The single RPC alone shortened a decode step from 16.3 ms to 15.1 ms.
+vLLM's engine core drives the workers with three RPCs per decode step: one to execute the model, one to sample, and one to collect the draft tokens. We moved sampling into `execute_model` and returned the drafts in the step's output, so a step needs only one RPC. In the same round, the token embedding moved into the first fused launch, the greedy head and the argmax over the full vocabulary moved into the last one, and launch plans are cached. The single RPC alone shortened a decode step from 16.3 ms to 15.1 ms, and the round as a whole took TPOT from 17.7 ms to 14.8 ms.
 
-#### Step 2: Direct launch of cached NEFFs (14.8 ms to 14.0 ms, 1.06x)
+#### Step 2: Direct launch of cached NEFFs
 
-The worker used to launch each NEFF through the compiled graph's entry point. We now call the NEFF executor directly, with step buffers whose addresses stay the same from step to step. Because the I/O tensors keep their addresses, the runtime reuses each launch's DMA ring instead of rebuilding it. Entering the five launches of a step took 3.6 ms of host time instead of 18.7 ms. TPOT improved by 6% at batch size 1, and by up to 26% at batch size 10.
+The worker used to launch each NEFF through the compiled graph's entry point. We now call the NEFF executor directly, with step buffers whose addresses stay the same from step to step. Because the I/O tensors keep their addresses, the runtime reuses each launch's DMA ring instead of rebuilding it. Entering the five launches of a step took 3.6 ms of host time instead of 18.7 ms. TPOT improved by 6% at batch size 1 (14.8 ms to 14.0 ms), and by up to 26% at batch size 10.
 
-#### Step 3: Async scheduling with an on-device step prologue (11.5 ms to 9.1 ms, 1.26x)
+#### Step 3: Async scheduling with an on-device step prologue
 
-vLLM's async scheduling prepares step N+1 while step N runs on the device. Speculative decoding makes this hard: the inputs of step N+1, namely the positions, the KV-cache slots, the slot tables and the n-gram ids for the Engram lookup, depend on how many drafts step N accepted, which the host does not know until step N finishes. We moved the construction of these inputs into a small NKI kernel, the step prologue, which runs on the device at the start of each step and reads the previous step's acceptance result. The host never waits for the device, and the device's idle time per step fell from 4.4–5.1 ms to 0.7 ms.
+vLLM's async scheduling prepares step N+1 while step N runs on the device. Speculative decoding makes this hard: the inputs of step N+1, namely the positions, the KV-cache slots, the slot tables and the n-gram ids for the Engram lookup, depend on how many drafts step N accepted, which the host does not know until step N finishes. We moved the construction of these inputs into a small NKI kernel, the step prologue, which runs on the device at the start of each step and reads the previous step's acceptance result. The host never waits for the device, and the device's idle time per step fell from 4.4–5.1 ms to 0.7 ms, which took TPOT from 11.5 ms to 9.1 ms.
 
 Running ahead has a cost for the first token, so the scheduler holds back in two cases. When a lone request's step might be its last, the scheduler does not queue a speculative step behind it; that step used to run in front of the next request's prefill and added 17 to 22 ms to the TTFT of half the requests. A request's first decode step also waits for its prefill to finish.
 
@@ -166,13 +181,13 @@ Prefill/decode (PD) disaggregation and attention/FFN disaggregation (AFD) usuall
 
 Two ways of splitting weights over ranks appear below. **Tensor parallelism (TP)** splits one weight matrix across ranks: every rank computes with its slice, and an all-reduce adds the partial results. **Expert parallelism (EP)** gives each rank whole experts: a rank works only when one of its experts is picked. TP8 × EP8 means that the experts are divided into 8 groups, and each group's experts are split across 8 ranks.
 
-#### TP8 × EP8 for the decode MoE (7.8 ms to 4.90 ms, 1.59x)
+#### TP8 × EP8 for the decode MoE
 
 For prefill and batched decode, the deployment layout works well: attention is TP8 and replicated eight times, each rank holds 6 of the 384 routed experts (EP64), the shared expert is replicated, and the Engram tables are split by row across all ranks. A batch-1 decode step, however, has only 6 rows, one token plus five drafts. Its 36 expert picks (6 rows × 6 experts) landed on a few ranks, and every all-reduce waited for the busiest one while most ranks had nothing to do.
 
 For steps of up to 16 rows, we therefore switch the MoE to a TP8 × EP8 layout. The 384 experts form eight groups of 48, and each group's experts are split by hidden column across the 8 ranks of an attention group (288 of the 2,304 columns per rank), so every rank does the same amount of work. The shared expert is split into 72 blocks of 32 columns spread over the ranks, and the Engram value projection (about 157 MB, replicated in prefill) is split across the attention group, which saves about 180 µs in each Engram layer. The price is memory. The expert weights now exist twice in HBM, once in each layout, because prefill still uses the first one. The second copy costs 9.4 GiB of HBM per rank on the 8-device deployment, and it was worth it: batch-1 TPOT fell by 27 to 37%, from 7.8 ms to 4.9 ms at 512 tokens. Batched decode, with 60 rows at batch size 10, keeps the deployment layout in the 16-device port.
 
-#### Separate prefill and decode kernels (TTFT 1,064 ms to 232 ms at 1,024 tokens)
+#### Separate prefill and decode kernels
 
 Each of the 9 block archetypes has a prefill kernel and a decode kernel, tuned separately, because a prefill block processes hundreds of tokens while a decode block processes six rows. The prefill kernels are what moved TTFT (Figure 2). An agentic optimization loop rewrote one archetype's prefill kernel from 25.3 ms to 5.2 ms per block; its two largest gains came from stacking tokens on SBUF partitions, and from letting empty attention slots read 128 distinct zero rows instead of one hot row. The per-archetype prefill kernels that followed cut TTFT at 1,024 tokens from 1,064 ms to 300 ms. At that point the indexer took 62% of an 8K-token prefill chunk. Batching its scoring to 32 tokens per matmul, with a top-k built from Tensor Engine transposes, took another 16 to 48% off TTFT, to 232 ms at 1,024 tokens.
 
@@ -185,9 +200,9 @@ Prefill keeps one launch per block, because a block that processes a thousand to
 | 2,027 | 427 ms | 4,700 tokens/s | 418 ms |
 | 8,146 | 1,715 ms | 4,750 tokens/s | 1,659 ms |
 
-#### The drafter (8.8 ms to 7.8 ms, 1.13x)
+#### The drafter
 
-The DSpark drafter runs once per decode step, after the 40 layers, and took 19% of a batch-1 decode step. We optimized its kernels the same way, making them 2.7x faster and bit-exact, and column-sharded its input projection (`main_proj`), which cut its weights from 79 MB to 1.2 MB per rank.
+The DSpark drafter runs once per decode step, after the 40 layers, and took 19% of a batch-1 decode step. We optimized its kernels the same way, making them 2.7x faster and bit-exact, and column-sharded its input projection (`main_proj`), which cut its weights from 79 MB to 1.2 MB per rank. TPOT fell from 8.8 ms to 7.8 ms.
 
 ![One transformer block, sharded for prefill and batched decode vs. batch-1 decode](rpt_figs/sharding_prefill_vs_decode.png)
 
@@ -236,9 +251,9 @@ This is also what makes Trainium 3 cheaper per token than B300. The table below 
 | Trainium 3, 8 devices, $47/hr instance | 8 Trn3 | 288.3 | 23.50 | 44,160 | 1.22x |
 | Trainium 3, 8 devices, $51/hr instance | 8 Trn3 | 288.3 | 25.50 | 40,697 | 1.12x |
 
-The B300 cost is AWS's 8-GPU B300 instance at $130 per hour, pro-rated to 4 GPUs. The trn3.48xlarge price is an estimate: $47 per hour based on H100 pricing, or $51 per hour based on the performance ratio to B300. The B300 rate is a P90 interactivity figure measured on Oct 20, the Trainium 3 rate is the median TPOT of our best cell, and neither counts input tokens or prefill time. The comparison is therefore an estimate with two soft inputs, the instance price and the text being generated: at the 274 tokens/s of the 96-prompt sample, the two Trainium 3 rows become 1.16x and 1.07x.
+The B300 cost is AWS's 8-GPU B300 instance at $130 per hour, pro-rated to 4 GPUs. The trn3.48xlarge price is an estimate: $47 per hour based on H100 pricing, or $51 per hour based on the performance ratio to B300. The B300 rate is a P90 interactivity figure measured on Oct 20 by SemiAnalysis InferenceX [6], the Trainium 3 rate is the median TPOT of our best cell, and neither counts input tokens or prefill time. The comparison is therefore an estimate with two soft inputs, the instance price and the text being generated: at the 274 tokens/s of the 96-prompt sample, the two Trainium 3 rows become 1.16x and 1.07x.
 
-### What a User Sees: Speed by Content, Context and Batch Size
+## Experiment Results
 
 The benchmark numbers above come from one kind of text and one kind of request. The speed that a user sees also depends on what the model writes, on how long the answer and the context are, and on how the engine is configured. We measured each of these on the 8-device deployment.
 
@@ -284,14 +299,14 @@ For the first token, Trainium 3 is already on par with GPU serving. The table be
 
 | Deployment | TTFT, 1K-token prompt | Source |
 |---|---|---|
-| Dynamo vLLM, concurrency 1 | 0.2 s | [SemiAnalysis InferenceX](https://inferencex.semianalysis.com/) |
-| Together AI | 0.3 s | [Artificial Analysis](https://artificialanalysis.ai/) |
+| Dynamo vLLM, concurrency 1 | 0.2 s | [6] |
+| Together AI | 0.3 s | [7] |
 | Trainium 3, 16 devices (ours) | 0.23 s | median at batch size 1 |
 | Trainium 3, 8 devices (ours) | 0.24 s | median at batch size 1 |
 
 Our TTFT is close to Dynamo vLLM's and below Together AI's. The measurements are not identical: the published numbers are rounded to a tenth of a second, and an API benchmark such as Artificial Analysis measures from the client, network included. Still, prefill is no longer where Trainium 3 falls behind.
 
-Decode is. The B300 deployment serves 653.6 tokens/s per user, 2.27x more than Trainium 3. We do not know the step time of the B300 deployment, only its output speed. To have a target in our own units, we ask how fast our step would have to be: at our draft acceptance, about 3.5 tokens per decode step, 653.6 tokens/s requires a 5.3 ms decode step (3.49 / 653.6 s) instead of the current 12.1 ms. As we showed in the [hardware comparison](#aws-trainium-3-vs-nvidia-b300), the hardware itself is not the reason: 8 Trainium 3 devices have as much FP8 throughput as 4 B300 GPUs and 22% more HBM bandwidth. To find where the time goes, we profiled batch-1 decode on the 8-device deployment with 512-token prompts. The Neuron profiler records every instruction of every engine, every DMA transfer and every collective on the device, together with a system trace of the host's launches. We captured four consecutive decode steps of a running server and analyze the third one, because the first two still carry the start of the profiler. The capture is faithful to normal serving: the profiled step takes 12.03 to 12.04 ms from the start of its first launch to the start of the next step, against a 12.06 ms step seen by the client outside the profiled window and 12.10 ms in the benchmark.
+Decode is. The B300 deployment serves 653.6 tokens/s per user [6], 2.27x more than Trainium 3. We do not know the step time of the B300 deployment, only its output speed. To have a target in our own units, we ask how fast our step would have to be: at our draft acceptance, about 3.5 tokens per decode step, 653.6 tokens/s requires a 5.3 ms decode step (3.49 / 653.6 s) instead of the current 12.1 ms. As we showed in the [hardware comparison](#aws-trainium-3-vs-nvidia-b300), the hardware itself is not the reason: 8 Trainium 3 devices have as much FP8 throughput as 4 B300 GPUs and 22% more HBM bandwidth. To find where the time goes, we profiled batch-1 decode on the 8-device deployment with 512-token prompts. The Neuron profiler records every instruction of every engine, every DMA transfer and every collective on the device, together with a system trace of the host's launches. We captured four consecutive decode steps of a running server and analyze the third one, because the first two still carry the start of the profiler. The capture is faithful to normal serving: the profiled step takes 12.03 to 12.04 ms from the start of its first launch to the start of the next step, against a 12.06 ms step seen by the client outside the profiled window and 12.10 ms in the benchmark.
 
 The profile accounts for the whole 12.04 ms step. The device is busy for 11.70 ms (97%): 3.94 ms in the MoE, 3.38 ms in attention, 2.25 ms in collectives, 1.12 ms in the drafter, 0.54 ms in the indexer's top-k and 0.47 ms elsewhere. The host time between the four launches is only 0.34 ms. One layer takes about 216 µs: about 85 µs of attention, a 15 µs TP8 all-reduce, 96 µs of MoE and a 20 µs all-rank all-reduce.
 
@@ -379,5 +394,21 @@ Taken together, we treat optimization as a heterogeneous system of two unlike pr
 
 *Figure 13. Optimization as an agent–expert heterogeneous system. The human expert brings a holistic view, expert knowledge that shortcuts the exploration, decision making and the analysis of complex tasks; the self-improving agent hill-climbs on a clear objective, keeping an edit only when it verifies and measures better. ① Grilling syncs the idea in both directions, ② the human sends constraints for a constrained optimization, and ③ the agent feeds the results back. Arrow colours show the sender.*
 
+### Acknowledgement
 
+This work is supported by the AWS Build on Trainium program at UCLA. We used AutoHelix as the agentic loop harness to optimize the kernel, with special modifications to add constraints based on human experts. We would like to thank Ellen Hermansen from the Amazon Research Initiative team for providing AWS access and promotional credits, Amit Kachroo for providing technical insights in the Amazon Science Hub program, and James Hamilton for the continuous support on providing latest Trainium instances. 
 
+---
+
+## References
+
+[1] DeepSeek-AI. DeepSeek-V4.1-Flash model card. Hugging Face. https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash  
+[2] DeepSeek-AI. DeepSeek-V4.1-Flash Technical Report. https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf  
+[3] AWS Neuron Documentation. Trainium3 Architecture. https://awsdocs-neuron.readthedocs-hosted.com/en/latest/about-neuron/arch/neuron-hardware/trainium3.html  
+[4] AWS Neuron Documentation. NKI Trainium3 Architecture Guide. https://awsdocs-neuron.readthedocs-hosted.com/en/latest/nki/guides/architecture/trainium3_arch.html  
+[5] NVIDIA. GB300 NVL72. https://www.nvidia.com/en-us/data-center/gb300-nvl72/  
+[6] SemiAnalysis. InferenceX. https://inferencex.semianalysis.com/  
+[7] Artificial Analysis. https://artificialanalysis.ai/  
+[8] vLLM Neuron plugin. https://github.com/vllm-project/vllm-neuron  
+[9] W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H. Zhang and I. Stoica. Efficient Memory Management for Large Language Model Serving with PagedAttention. SOSP 2023. https://github.com/vllm-project/vllm  
+[10] AWS Neuron Documentation. Neuron Kernel Interface (NKI). https://awsdocs-neuron.readthedocs-hosted.com/en/latest/nki/index.html    
