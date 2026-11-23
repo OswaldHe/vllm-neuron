@@ -53,19 +53,19 @@ The layers are arranged in groups that each start with a Full or Reindex layer f
 
 ## AWS Trainium 3 vs. NVIDIA B300
 
-A Trainium 3 device has eight compute cores (NeuronCore-v4) and 4 HBM stacks, where every pair of cores share the same HBM stack. A NeuronCore is a heterogeneous processor with several specialized engines. The **Tensor Engine** is a systolic array for matrix multiplications. The **Vector Engine** and **Scalar Engine** run vector operations such as reductions and activation functions. The **GPSIMD Engine** runs general-purpose code. They share a software-managed on-chip scratchpad, **SBUF**, while the Tensor Engine accumulates into a separate buffer, **PSUM**. The DMA engines move data between HBM and SBUF. Although there are 8 cores in one device, the architecture is organized as 4 ranks connected through NeuronLink-v4. Interconnects between ranks in the same device and across devices are the same. One can therefore treat a Trainium 3 device as "4 devices".
+A Trainium 3 device has eight compute cores (NeuronCore-v4) and 4 HBM3E stacks, where every pair of cores share the same HBM stack [3] [6]. A NeuronCore is a heterogeneous processor with several specialized engines. The **Tensor Engine** is a systolic array for matrix multiplications. The **Vector Engine** runs operations where each output depends on several inputs, such as reductions and normalization. The **Scalar Engine** runs element-wise operations such as activation functions. The **GPSIMD Engine** runs general-purpose code. They share a software-managed on-chip scratchpad, **SBUF**, while the Tensor Engine accumulates into a separate buffer, **PSUM**. The DMA engines move data between HBM and SBUF. Although there are 8 cores in one device, software addresses them as logical NeuronCores. With the configuration we use (LNC = 2), a device appears as 4 logical cores, each made of 2 physical cores and 36 GiB of HBM [3] [6]. Each logical core is one rank of our deployment. A rank sends data to a rank on the same device in the same way as to a rank on another device, where the transfer travels over NeuronLink-v4 [5] [6]. One can therefore treat a Trainium 3 device as "4 devices".
 
 ![Trainium 3 device and the NeuronCore programming model](rpt_figs/trainium3_neuroncore.png)
 
 *Figure 4. Left: a Trainium 3 device, eight NeuronCore-v4 cores around four HBM stacks. Right: the programming model of one NeuronCore. DMA moves data between HBM and the on-chip SBUF. The tensor, vector, scalar and GPSIMD engines read from and write to SBUF, and the tensor engine accumulates into PSUM [3] [4].*
 
-Compared with Trainium 2, Trainium 3 has 1.5x the HBM capacity (144 GiB against 96 GiB) and 1.7x the HBM bandwidth (4.9 TB/s against 2.9 TB/s) per device. The devices are also connected differently. Trainium 2 links its devices in a 2D torus. Traffic between distant devices passes through the devices in between. A trn3.48xlarge instance has 16 Trainium 3 devices connected through switches instead (Figure 5). Each device has a direct link to one partner, device 2k to device 2k+1. Beyond that, the instance is split into two halves: the eight even-numbered devices are connected all-to-all through one switch, and the eight odd-numbered devices through a second switch. A device therefore reaches its partner and every device of its own half in one hop, and any other device in two hops, through its partner or through the switch.
+Compared with Trainium 2, Trainium 3 has 1.5x the HBM capacity (144 GiB against 96 GiB) and 1.7x the HBM bandwidth (4.9 TB/s against 2.9 TB/s) per device [3]. The extra bandwidth comes from faster HBM3E: the pin speed rises from 5.7 Gbps to 9.6 Gbps on the same four stacks [6]. The devices are also connected differently. A trn2.48xlarge links its 16 Trainium 2 devices in a 4×4 2D torus [6]. Traffic between distant devices passes through the devices in between. A trn3.48xlarge instance has 16 Trainium 3 devices connected through switches instead (Figure 5) [5]. Each device has a direct link to one partner, device 2k to device 2k+1 [5]. Beyond that, every device connects to the rack's NeuronSwitch-v1 [5]. AWS documents it as one all-to-all switch per rack. In the first generation of switch trays, it is built as two switch planes of eight PCIe 6.0 switches each, and a device links to all eight switches of one plane only [6]. The eight even-numbered devices are on one plane, and the eight odd-numbered devices on the other. A device therefore reaches its partner and every device of its own plane in one hop, and any other device in two hops, through its partner or through a device of its own plane. Transfers that need two hops are forwarded automatically, so a kernel only names the destination [5] [6]. The planes sit in the rack, outside the instance, and also serve the second 16-device server of the rack [5] [6].
 
 ![trn3.48xlarge interconnect](rpt_figs/trn3_48xlarge_topology.png)
 
-*Figure 5. Interconnect topology of trn3.48xlarge. Devices 2k and 2k+1 share a direct link. The 8 even devices are connected all-to-all through one switch, and the 8 odd devices through another. With 4 ranks in each device, the 16-device configuration runs 64 ranks on cores 0–63. Each attention TP8 group (8 consecutive ranks) sits on one linked device pair.*
+*Figure 5. Interconnect topology of trn3.48xlarge. Devices 2k and 2k+1 share a direct link. The 8 even devices are connected all-to-all through one switch plane, and the 8 odd devices through another [5] [6]. With 4 ranks in each device, the 16-device configuration runs 64 ranks on cores 0–63. Each attention TP8 group (8 consecutive ranks) sits on one linked device pair.*
 
-One question is, compared to B300 which is the current state-of-the-art serving device, what's the competence of Trainium 3? The table below compares a Trainium 3 device with an NVIDIA B300 GPU. B300 has 2x the FP8 throughput, 6x the FP4 throughput, 3.7x the BF16 throughput, 1.6x the HBM bandwidth, about twice the memory and 7x the intra-server interconnect bandwidth than Trainium. 
+One question is, compared to B300 which is the current state-of-the-art serving device, what's the competence of Trainium 3? The table below compares a Trainium 3 device with an NVIDIA B300 GPU. B300 has 2x the FP8 throughput, 6x the FP4 throughput, 3.7x the BF16 throughput, 1.6x the HBM bandwidth, about twice the memory and 3.5x the intra-server interconnect bandwidth than Trainium. 
 
 | Per chip | Trainium 3 | B300 | B300 / Trainium 3 |
 |---|---|---|---|
@@ -74,9 +74,9 @@ One question is, compared to B300 which is the current state-of-the-art serving 
 | Dense BF16 | 0.67 PFLOPS | 2.5 PFLOPS | 3.7x |
 | FP32 | 0.18 PFLOPS | 0.08 PFLOPS | 0.45x |
 | HBM | 144 GiB at 4.9 TB/s | up to 288 GB at 8 TB/s | 1.6x bandwidth |
-| Intra-server interconnect | 256 GB/s (NeuronLink-v4) | 1,800 GB/s (NVLink 5) | 7x |
+| Intra-server interconnect, one direction | 256 GB/s (NeuronLink-v4, measured all-gather) | 900 GB/s (NVLink 5, link rate) | 3.5x |
 
-*B300 values are NVIDIA's GB300 NVL72 rack figures divided by its 72 GPUs, with sparse figures halved to dense  [3] [5].*
+*B300 values are NVIDIA's GB300 NVL72 rack figures divided by its 72 GPUs, with sparse figures halved to dense [3] [7].*
 
 Looking at the FLOPs of DeepSeek V4.1 Flash by data type, we found that 47.6% are FP4 (the routed experts), 30.8% FP8, 17.2% BF16 and 4.5% FP32:
 
@@ -87,11 +87,11 @@ Looking at the FLOPs of DeepSeek V4.1 Flash by data type, we found that 47.6% ar
 | BF16 | 17.2% | 3.7x |
 | FP32 | 4.5% | 0.45x |
 
-Therefore, 1 B300 is equivalent to 4 Trainium 3 in terms of the FLOPs performance for DeepSeek V4.1 Flash, about 2 Trainium 3 in terms of the HBM bandwidth, and 7 Trainium 3 for interconnect bandwidth. Decoding of LLMs is highly memory-bound. In production deployments, however, large collective overheads and dependency chains between compute, collectives and DMA accesses are often the culprits of overall slowdown. Furthermore, Trainium 3 needs to perform collectives across more ranks, which makes the interconnect bandwidth a more severe bottleneck. Therefore, we believe more than 2 Trainium 3 is needed to catch up a single B300 GPU.
+Therefore, 1 B300 is equivalent to 4 Trainium 3 in terms of the FLOPs performance for DeepSeek V4.1 Flash, about 2 Trainium 3 in terms of the HBM bandwidth, and 3.5 Trainium 3 for interconnect bandwidth. Decoding of LLMs is highly memory-bound. In production deployments, however, large collective overheads and dependency chains between compute, collectives and DMA accesses are often the culprits of overall slowdown. Furthermore, Trainium 3 needs to perform collectives across more ranks, which makes the interconnect bandwidth a more severe bottleneck. Therefore, we believe more than 2 Trainium 3 is needed to catch up a single B300 GPU.
 
 ## Inference Optimization: Reaching 60x Speedup Over 12 days
 
-Our deployment is built on the vLLM Neuron plugin [8], which adds a Neuron backend to vLLM [9]. All of its kernels are written in the Neuron Kernel Interface (NKI) [10] on Neuron SDK 2.33.0. Many components of DeepSeek V4.1 Flash, such as CSA2, mHC, Engram and DSpark, are not yet supported by vLLM Neuron. We therefore first brought the model up on a trn2.48xlarge, where we implemented the missing operations and validated correctness. We then moved it to a trn3.48xlarge on Oct 22, where it decoded at 99.4 ms per token. Over the following two weeks, we optimized it in four directions: using Trainium 3's new hardware features, fusing kernels into megakernels, removing host overhead in vLLM's Neuron backend, and specializing kernels and parallelization for each phase.
+Our deployment is built on the vLLM Neuron plugin [10], which adds a Neuron backend to vLLM [11]. All of its kernels are written in the Neuron Kernel Interface (NKI) [12] on Neuron SDK 2.33.0. Many components of DeepSeek V4.1 Flash, such as CSA2, mHC, Engram and DSpark, are not yet supported by vLLM Neuron. We therefore first brought the model up on a trn2.48xlarge, where we implemented the missing operations and validated correctness. We then moved it to a trn3.48xlarge on Oct 22, where it decoded at 99.4 ms per token. Over the following two weeks, we optimized it in four directions: using Trainium 3's new hardware features, fusing kernels into megakernels, removing host overhead in vLLM's Neuron backend, and specializing kernels and parallelization for each phase.
 
 ### Exploit new hardware features in Trainium 3
 
@@ -192,7 +192,7 @@ Inside a megakernel, the device mostly waits while an all-reduce is in flight. W
 
 ### Temporal Disaggregation: Specialized Kernels/Parallelization for Different Computations
 
-LLMs are getting more diverse and complex. Disaggregated inference has become a standard way to serve them. Prefill/decode (PD) disaggregation [11] [12] runs the compute-bound prefill and the memory-bound decode on separate groups of devices. Attention/FFN disaggregation (AFD) [13] [14] further separates attention from the MoE experts. Each group then uses the kernels and parallelization scheme that fit its work.
+LLMs are getting more diverse and complex. Disaggregated inference has become a standard way to serve them. Prefill/decode (PD) disaggregation [13] [14] runs the compute-bound prefill and the memory-bound decode on separate groups of devices. Attention/FFN disaggregation (AFD) [15] [16] further separates attention from the MoE experts. Each group then uses the kernels and parallelization scheme that fit its work.
 
 Similarly, different parts of DeepSeek V4.1 Flash need different kernels and parallelization schemes. New modules such as Engram add more choices. For high interactivity, however, splitting the model across groups of devices would add latency to every decoding step. We therefore use temporal disaggregation. Each module and each stage has its own kernels and parallelization scheme, and they run one after another on the same devices (Figure 8).
 
@@ -282,8 +282,8 @@ For the first token, Trainium 3 is already on par with GPU serving. The table be
 
 | Deployment | TTFT, 1K-token prompt | Source |
 |---|---|---|
-| Dynamo vLLM, concurrency 1 | 0.2 s | [6] |
-| Together AI | 0.3 s | [7] |
+| Dynamo vLLM, concurrency 1 | 0.2 s | [8] |
+| Together AI | 0.3 s | [9] |
 | Trainium 3, 8 devices (ours) | 0.24 s | median at batch size 1 |
 
 Our TTFT is close to Dynamo vLLM and lower than Together AI. The published numbers are rounded to a tenth of a second, and Artificial Analysis measures from the client, including the network.
@@ -300,7 +300,7 @@ Serving one user on half of the instance also makes Trainium 3 cheaper per token
 | Trainium 3, 8 devices, $47/hr instance | JSON data, exact copy | 8 Trn3 | 432–445 | 23.50 | 66,179–68,170 | 1.83–1.88x |
 | Trainium 3, 8 devices, $51/hr instance | JSON data, exact copy | 8 Trn3 | 432–445 | 25.50 | 60,988–62,824 | 1.68–1.74x |
 
-The B300 cost is AWS's 8-GPU B300 instance at $130 per hour, divided by two for 4 GPUs. The trn3.48xlarge price is our estimate: $47 per hour based on H100 pricing, or $51 per hour based on the performance ratio to B300. The B300 token speed is the P90 interactivity measured by SemiAnalysis InferenceX [6] on Oct 20. Neither side counts input tokens or prefill time. We have no B300 measurement on code or JSON data. If B300 also runs faster on such text, the code and JSON rows overstate the advantage of Trainium 3.
+The B300 cost is AWS's 8-GPU B300 instance at $130 per hour, divided by two for 4 GPUs. The trn3.48xlarge price is our estimate: $47 per hour based on H100 pricing, or $51 per hour based on the performance ratio to B300. The B300 token speed is the P90 interactivity measured by SemiAnalysis InferenceX [8] on Oct 20. Neither side counts input tokens or prefill time. We have no B300 measurement on code or JSON data. If B300 also runs faster on such text, the code and JSON rows overstate the advantage of Trainium 3.
 
 ### Batch 1 vs. batch 10
 
@@ -317,7 +317,7 @@ With ten sequences, a decoding step takes about 41 to 45 ms, whether one user or
 
 ## Profile Analysis
 
-Trainium 3 matches GPU serving on TTFT, but not on decoding speed. The B300 deployment serves 653.6 tokens/s per user [6], 2.27x more than our 8-device deployment. This is expected from the [hardware comparison](#aws-trainium-3-vs-nvidia-b300). Our deployment uses 2 Trainium 3 devices for each B300. This gives slightly more HBM bandwidth than B300, but about half of the FLOPs for this model and less than a third of the interconnect bandwidth. To match B300 at our draft acceptance of about 3.5 tokens per step, our decoding step would need to take 5.3 ms instead of 12.1 ms.
+Trainium 3 matches GPU serving on TTFT, but not on decoding speed. The B300 deployment serves 653.6 tokens/s per user [8], 2.27x more than our 8-device deployment. This is expected from the [hardware comparison](#aws-trainium-3-vs-nvidia-b300). Our deployment uses 2 Trainium 3 devices for each B300. This gives slightly more HBM bandwidth than B300, but about half of the FLOPs for this model and a little more than half of the interconnect bandwidth. To match B300 at our draft acceptance of about 3.5 tokens per step, our decoding step would need to take 5.3 ms instead of 12.1 ms.
 
 To find where the time goes, we profiled a batch-1 decoding step on the 8-device deployment. The device is busy for 97% of the 12.04 ms step. The MoE takes 3.94 ms, attention 3.38 ms, collectives 2.25 ms and the drafter 1.12 ms. The host gaps between the four launches take only 0.34 ms.
 
@@ -405,13 +405,15 @@ This work is supported by the AWS Build on Trainium program at UCLA. We used Aut
 [2] DeepSeek-AI. DeepSeek-V4.1-Flash Technical Report. https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf  
 [3] AWS Neuron Documentation. Trainium3 Architecture. https://awsdocs-neuron.readthedocs-hosted.com/en/latest/about-neuron/arch/neuron-hardware/trainium3.html  
 [4] AWS Neuron Documentation. NKI Trainium3 Architecture Guide. https://awsdocs-neuron.readthedocs-hosted.com/en/latest/nki/guides/architecture/trainium3_arch.html  
-[5] NVIDIA. GB300 NVL72. https://www.nvidia.com/en-us/data-center/gb300-nvl72/  
-[6] SemiAnalysis. InferenceX. https://inferencex.semianalysis.com/  
-[7] Artificial Analysis. https://artificialanalysis.ai/  
-[8] vLLM Neuron plugin. https://github.com/vllm-project/vllm-neuron  
-[9] W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H. Zhang and I. Stoica. Efficient Memory Management for Large Language Model Serving with PagedAttention. SOSP 2023. https://github.com/vllm-project/vllm  
-[10] AWS Neuron Documentation. Neuron Kernel Interface (NKI). https://awsdocs-neuron.readthedocs-hosted.com/en/latest/nki/index.html  
-[11] Y. Zhong et al. DistServe: Disaggregating Prefill and Decoding for Goodput-optimized Large Language Model Serving. OSDI 2024. https://arxiv.org/abs/2401.09670  
-[12] P. Patel et al. Splitwise: Efficient Generative LLM Inference Using Phase Splitting. ISCA 2024. https://arxiv.org/abs/2311.18677  
-[13] R. Zhu et al. MegaScale-Infer: Serving Mixture-of-Experts at Scale with Disaggregated Expert Parallelism. 2025. https://arxiv.org/abs/2504.02263  
-[14] StepFun. Step-3 is Large yet Affordable: Model-system Co-design for Cost-effective Decoding. 2025. https://arxiv.org/abs/2507.19427  
+[5] AWS Neuron Documentation. Amazon EC2 Trn3 Architecture. https://awsdocs-neuron.readthedocs-hosted.com/en/latest/about-neuron/arch/neuron-hardware/trn3-arch.html  
+[6] D. Patel, D. Nishball, W. Chu et al. AWS Trainium3 Deep Dive: A Potential Challenger Approaching. SemiAnalysis, Dec 4, 2025. https://newsletter.semianalysis.com/p/aws-trainium3-deep-dive-a-potential  
+[7] NVIDIA. GB300 NVL72. https://www.nvidia.com/en-us/data-center/gb300-nvl72/  
+[8] SemiAnalysis. InferenceX. https://inferencex.semianalysis.com/  
+[9] Artificial Analysis. https://artificialanalysis.ai/  
+[10] vLLM Neuron plugin. https://github.com/vllm-project/vllm-neuron  
+[11] W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H. Zhang and I. Stoica. Efficient Memory Management for Large Language Model Serving with PagedAttention. SOSP 2023. https://github.com/vllm-project/vllm  
+[12] AWS Neuron Documentation. Neuron Kernel Interface (NKI). https://awsdocs-neuron.readthedocs-hosted.com/en/latest/nki/index.html  
+[13] Y. Zhong et al. DistServe: Disaggregating Prefill and Decoding for Goodput-optimized Large Language Model Serving. OSDI 2024. https://arxiv.org/abs/2401.09670  
+[14] P. Patel et al. Splitwise: Efficient Generative LLM Inference Using Phase Splitting. ISCA 2024. https://arxiv.org/abs/2311.18677  
+[15] R. Zhu et al. MegaScale-Infer: Serving Mixture-of-Experts at Scale with Disaggregated Expert Parallelism. 2025. https://arxiv.org/abs/2504.02263  
+[16] StepFun. Step-3 is Large yet Affordable: Model-system Co-design for Cost-effective Decoding. 2025. https://arxiv.org/abs/2507.19427  

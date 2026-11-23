@@ -1,5 +1,5 @@
 """trn3.48xlarge interconnect, from `neuron-ls --topology` on the instance: device 2k <-> 2k+1 direct link, the 8 even
-devices all-to-all through one switch, the 8 odd devices through another. LNC=2: 4 logical cores per device.
+devices all-to-all through one switch plane, the 8 odd devices through another. LNC=2: 4 logical cores per device.
 Attention TP8 group = 8 consecutive ranks (the EP-TP group) = one linked pair; the 8-device runs use devices 0-7."""
 import sys
 from pathlib import Path
@@ -37,8 +37,8 @@ for i in range(8):
                                    fill=GREEN_L, rx=5)]))
 # switches
 sx0, sx1 = X0 + 2, X0 + PITCH * 8 - 2
-for sid, (y, h), lab in [('sw_even', SW_T, 'Switch: all-to-all among the 8 even devices (0, 2, 4, … 14)'),
-                         ('sw_odd', SW_B, 'Switch: all-to-all among the 8 odd devices (1, 3, 5, … 15)')]:
+for sid, (y, h), lab in [('sw_even', SW_T, 'Switch plane: all-to-all among the 8 even devices (0, 2, 4, … 14)'),
+                         ('sw_odd', SW_B, 'Switch plane: all-to-all among the 8 odd devices (1, 3, 5, … 15)')]:
     b.append(g(f'n:{sid}', [rect(sx0, y, sx1 - sx0, h, fill=ORANGE_L, stroke=ORANGE_M, sw=0.8, rx=3),
                             text((sx0 + sx1) / 2, y + h / 2 + 2.7, lab, size=7.5, anchor='middle')], 'node'))
 # links (drawn before devices so the device boxes cover the line ends)
