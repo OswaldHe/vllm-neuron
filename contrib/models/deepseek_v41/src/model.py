@@ -543,6 +543,42 @@ def _nki_entry(module: str, name: str = "kernel", grid: int = 0):
     )
 
 
+#: Long contexts: the indexer's `weighted_scores` kernel fails to trace past ~16K
+#: compressed keys (40064 at an 80K context), and the top-k of a segment's scores fails neuronx-cc past ~8.4K columns
+#: (NCC_INAS001 / ISGV902). Both are split along the keys; the results are the same (the scores column by column;
+#: a row's top-k lies in the union of its chunks' top-k).
+_SCORE_KEY_CHUNK = int(os.environ.get("DEEPSEEK_V41_SCORE_KEY_CHUNK", 16384))
+_TOPK_COL_CHUNK = int(os.environ.get("DEEPSEEK_V41_TOPK_COL_CHUNK", 8192))
+
+
+def _chunked_weighted_scores(q: torch.Tensor, keys: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    kernel = _nki_entry("index_score", "weighted_scores")
+    n = keys.shape[0]
+    if n <= _SCORE_KEY_CHUNK:
+        return kernel(q, keys, weights)
+    parts = [
+        kernel(q, keys[c : c + _SCORE_KEY_CHUNK].contiguous(), weights)
+        for c in range(0, n, _SCORE_KEY_CHUNK)
+    ]
+    return torch.cat([p.reshape(p.shape[0], -1) for p in parts], dim=-1)
+
+
+def _chunked_topk(score: torch.Tensor, k: int) -> torch.Tensor:
+    """Indices of the top-`k` along the last axis (as nki_topk(...)[1])."""
+    n = score.shape[-1]
+    if n <= _TOPK_COL_CHUNK or k >= _TOPK_COL_CHUNK:
+        return nki_topk(score, k)[1]
+    values, indices = [], []
+    for c in range(0, n, _TOPK_COL_CHUNK):
+        part = score[..., c : c + _TOPK_COL_CHUNK].contiguous()
+        v, i = nki_topk(part, min(k, part.shape[-1]))
+        values.append(v)
+        indices.append(i.to(torch.int64) + c)
+    candidates = torch.cat(indices, dim=-1)
+    pick = _chunked_topk(torch.cat(values, dim=-1), k)
+    return candidates.gather(-1, pick.to(torch.int64))
+
+
 def nki_topk(tensor: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Top-`k` along the last axis, through this repo's NKI top-k.
 
@@ -2011,7 +2047,7 @@ class Indexer(nn.Module):
         )
         index_k = paged.gather(shared.index_k, group_pos).reshape(read_len, -1)
         weights = self.weights_proj(x) * (self.softmax_scale * self.n_heads**-0.5)
-        index_score = _nki_entry("index_score", "weighted_scores")(
+        index_score = _chunked_weighted_scores(
             q.reshape(-1, self.index_head_dim),
             index_k,
             weights.reshape(seqlen, self.n_local_heads).t().contiguous().float(),
@@ -2044,7 +2080,7 @@ class Indexer(nn.Module):
             )
 
         topk = min(self.index_topk, read_len)
-        idxs = nki_topk(index_score, topk)[1]
+        idxs = _chunked_topk(index_score, topk)
         return torch.where(idxs < compress_lens, idxs + offset, EMPTY_SLOT).int()
 
 
